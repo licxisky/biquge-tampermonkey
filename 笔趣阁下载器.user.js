@@ -891,6 +891,7 @@
     _onComplete: null,   // 完成后的回调
     _onMouseMove: null,  // 事件监听器引用（用于清理）
     _onMouseClick: null,
+    _dragging: false,    // 拖拽进行中标志
 
     // 各模式下可标记的类型定义
     _modeTypes: {
@@ -982,8 +983,9 @@
       const bar = document.createElement('div');
       bar.id = 'bqg-picker-toolbar';
       bar.innerHTML = `
-        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-          <span style="font-weight:700;font-size:14px;color:#fff;white-space:nowrap;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span id="bqg-picker-drag-handle" title="拖动工具栏">⠇</span>
+          <span style="font-weight:700;font-size:13px;color:#fff;white-space:nowrap;">
             🎯 手动标记（${this._mode === 'toc' ? '目录页' : '内容页'}）
           </span>
           <div id="bqg-picker-badges" style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -1009,6 +1011,38 @@
         this.stop();
         showToast('已取消手动标记', 'info');
       });
+
+      // 拖拽逻辑：拖拽手柄 mousedown → 计算偏移 → mousemove 跟随光标
+      const handle = bar.querySelector('#bqg-picker-drag-handle');
+      let dragging = false, ox = 0, oy = 0;
+      handle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragging = true;
+        // 拖拽时取消 transform，改用绝对坐标
+        const rect = bar.getBoundingClientRect();
+        bar.style.setProperty('transform', 'none', 'important');
+        bar.style.setProperty('left', rect.left + 'px', 'important');
+        bar.style.setProperty('top',  rect.top  + 'px', 'important');
+        ox = e.clientX - rect.left;
+        oy = e.clientY - rect.top;
+        // 拖拽期间暂停高亮以防误触
+        this._dragging = true;
+      });
+      document.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        const vw = window.innerWidth, vh = window.innerHeight;
+        const bw = bar.offsetWidth,  bh = bar.offsetHeight;
+        let nx = e.clientX - ox;
+        let ny = e.clientY - oy;
+        nx = Math.max(0, Math.min(vw - bw, nx));
+        ny = Math.max(0, Math.min(vh - bh, ny));
+        bar.style.setProperty('left', nx + 'px', 'important');
+        bar.style.setProperty('top',  ny + 'px', 'important');
+      });
+      document.addEventListener('mouseup', () => {
+        if (dragging) { dragging = false; this._dragging = false; }
+      });
     },
 
     // 刷新工具栏 badge 已标记状态
@@ -1030,6 +1064,7 @@
     // 绑定全局鼠标监听
     _bindEvents() {
       this._onMouseMove = (e) => {
+        if (this._dragging) return;
         const target = e.target;
         if (!target) return;
         if (target.closest('#bqg-picker-toolbar') || target.closest('#bqg-picker-menu')) return;
@@ -1038,6 +1073,7 @@
         this._highlight = target;
       };
       this._onMouseClick = (e) => {
+        if (this._dragging) return;
         const target = e.target;
         if (!target) return;
         if (target.closest('#bqg-picker-toolbar') || target.closest('#bqg-picker-menu')) return;
@@ -1763,15 +1799,29 @@
         }
         #bqg-picker-toolbar {
             position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            right: 0 !important;
+            top: 12px !important;
+            left: 50% !important;
+            transform: translateX(-50%) !important;
             z-index: 2147483647 !important;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-            padding: 10px 20px !important;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.3) !important;
+            padding: 10px 16px 10px 12px !important;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.35) !important;
             box-sizing: border-box !important;
+            border-radius: 12px !important;
+            width: max-content !important;
+            max-width: 92vw !important;
+            user-select: none !important;
         }
+        #bqg-picker-drag-handle {
+            cursor: move !important;
+            padding: 2px 8px 2px 4px;
+            opacity: 0.7;
+            font-size: 16px;
+            line-height: 1;
+            color: #fff;
+            flex-shrink: 0;
+        }
+        #bqg-picker-drag-handle:hover { opacity: 1; }
         .bqg-picker-badge {
             display: inline-block;
             padding: 4px 10px;
