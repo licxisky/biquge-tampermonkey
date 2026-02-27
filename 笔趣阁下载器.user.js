@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         笔趣阁下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.9.11
-// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）、手动元素标记（AdGuard风格）、章节列表分页支持（自动检测并加载所有分页）、GM_xmlhttpRequest 绕过 CORS 限制。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net|alicesw.com|3haitang.com|shibashiwu.net|hbdafeng.com）
+// @version      0.9.13
+// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）、手动元素标记（AdGuard风格）、章节列表分页支持（自动检测并加载所有分页）、GM_xmlhttpRequest 绕过 CORS 限制、单章下载功能（章节页直接下载，支持手动标记）。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net|alicesw.com|3haitang.com|shibashiwu.net|hbdafeng.com）
 // @author       Licxisky
 // @match        *://*/*
 // @exclude      *://baidu.com/*
@@ -4189,13 +4189,54 @@
       // GM_xmlhttpRequest 直接返回 text，不需要处理 encoding
       text = await response.text();
 
-      // 检测是否被重定向到登录页面
-      if (text.includes('login.php') || text.includes('登录') || text.includes('请先登录')) {
-        throw new Error('需要登录才能查看此章节');
-      }
-
       const parser = new DOMParser();
       const doc = parser.parseFromString(text, 'text/html');
+
+      // 精确检测是否被重定向到登录页面
+      // 不再使用简单的文本匹配，而是检查页面结构特征
+      const isLoginPage = (() => {
+        // 1. 检查URL是否包含登录相关路径
+        const finalUrl = response.url || pageUrl;
+        if (/login|signin|auth/i.test(finalUrl)) {
+          console.log(`[登录检测] URL特征: ${finalUrl}`);
+          return true;
+        }
+
+        // 2. 检查是否有登录表单或登录容器
+        const loginForms = doc.querySelectorAll('form[action*="login"], form#login, .login-form, .signin-form, #loginForm');
+        if (loginForms.length > 0) {
+          console.log('[登录检测] 发现登录表单');
+          return true;
+        }
+
+        // 3. 检查页面标题是否明确为登录页
+        const title = doc.title || '';
+        if (/登录|登录页|请登录|用户登录/i.test(title)) {
+          console.log(`[登录检测] 页面标题: ${title}`);
+          return true;
+        }
+
+        // 4. 检查是否有明确的登录提示且缺少章节内容
+        const hasLoginPrompt = /请先登录|需要登录|未登录|登录后阅读|登录后继续/i.test(text);
+        const hasContentElement = currentSiteSelector.content.some(sel => doc.querySelector(sel));
+
+        if (hasLoginPrompt && !hasContentElement) {
+          console.log('[登录检测] 发现登录提示且无内容元素');
+          return true;
+        }
+
+        // 5. 检查是否被重定向（最终URL与请求URL不同且指向登录页）
+        if (response.url && response.url !== pageUrl && /login|signin|auth/i.test(response.url)) {
+          console.log(`[登录检测] 重定向: ${pageUrl} → ${response.url}`);
+          return true;
+        }
+
+        return false;
+      })();
+
+      if (isLoginPage) {
+        throw new Error('需要登录才能查看此章节');
+      }
 
       // 使用站点配置的内容选择器
       let contentDiv = null;
@@ -4612,4 +4653,227 @@
     });
 
   });
+
+  // ============================================================
+  // 下载当前章节功能
+  // ============================================================
+
+  /**
+   * 下载当前页面章节内容
+   * 在章节内容页使用，提取并保存当前章节为TXT文件
+   * @param {string} customContentSelector - 可选的自定义内容选择器（来自手动标记）
+   */
+  async function downloadCurrentChapter(customContentSelector = null) {
+    console.log('📖 [单章下载] 开始提取当前章节内容...');
+
+    // 检测站点规则
+    const siteConfig = detectSiteStructure();
+
+    // 查找内容元素
+    let contentDiv = null;
+
+    // 如果提供了自定义选择器（来自手动标记），优先使用
+    if (customContentSelector) {
+      contentDiv = document.querySelector(customContentSelector);
+      if (contentDiv) {
+        console.log(`✅ 使用自定义选择器找到内容: ${customContentSelector}`);
+      }
+    }
+
+    // 否则使用配置的选择器
+    if (!contentDiv) {
+      for (const selector of siteConfig.content) {
+        contentDiv = document.querySelector(selector);
+        if (contentDiv && contentDiv.innerText.trim().length > 50) {
+          console.log(`✅ 找到内容容器: ${selector}`);
+          break;
+        }
+      }
+    }
+
+    // 如果配置的选择器都找不到，尝试通用选择器
+    if (!contentDiv) {
+      const commonSelectors = ['div#content', '#chaptercontent', '.content', '#BookText', '.chapter-content', 'article', '.text-content', '.book-content'];
+      for (const selector of commonSelectors) {
+        const el = document.querySelector(selector);
+        if (el && el.innerText.trim().length > 100) {
+          contentDiv = el;
+          console.log(`✅ 使用通用选择器找到内容: ${selector}`);
+          break;
+        }
+      }
+    }
+
+    if (!contentDiv) {
+      console.error('❌ [单章下载] 未找到内容元素');
+
+      // 提供手动标记选项
+      const shouldPick = confirm(
+        '❌ 未找到章节内容元素。\n\n' +
+        '是否使用「🎯 手动标记」功能来标记内容区域？\n\n' +
+        '点击「确定」进入手动标记模式，点击「取消」退出。'
+      );
+
+      if (shouldPick) {
+        // 启动手动标记模式
+        showToast('🎯 正在启动手动标记模式...', 'info', 2000);
+        ElementPicker.start('content', async (rule) => {
+          console.log('✅ [手动标记] 规则已保存:', rule);
+          // 手动标记完成后，使用新的选择器重新下载
+          if (rule && rule.content && rule.content.length > 0) {
+            await downloadCurrentChapter(rule.content[0]);
+          }
+        });
+      } else {
+        showToast('❌ 已取消下载', 'info', 2000);
+      }
+      return;
+    }
+
+    // 获取章节标题
+    let title = '';
+    const titleSelectors = ['h1', '.title', '#title', 'h2', '.bookname', '.chapter-title'];
+    for (const selector of titleSelectors) {
+      const titleElement = document.querySelector(selector);
+      if (titleElement && titleElement.innerText.trim()) {
+        title = titleElement.innerText.trim();
+        console.log(`✅ 找到标题 (${selector}): ${title}`);
+        break;
+      }
+    }
+
+    // 如果找不到标题，使用页面标题
+    if (!title) {
+      title = document.title.trim().split('-')[0];
+      console.log(`⚠️ 未找到明确的标题元素，使用页面标题: ${title}`);
+    }
+
+    // 获取并清洗内容（使用克隆元素，避免破坏原始页面）
+    let rawContent = contentDiv.innerText;
+
+    // 克隆元素进行清理操作（避免破坏原始页面）
+    const clonedContentDiv = contentDiv.cloneNode(true);
+
+    // 清理广告元素（在克隆副本上操作）
+    clonedContentDiv.querySelectorAll('div#device').forEach(ad => ad.remove());
+    clonedContentDiv.querySelectorAll('p.readinline > a[href*="javascript:"]').forEach(op => op.remove());
+    clonedContentDiv.innerHTML = clonedContentDiv.innerHTML.replaceAll('<br>', '\n');
+
+    // 获取清洗后的内容（从克隆副本）
+    rawContent = clonedContentDiv.innerText;
+    const cleanedContent = cleanContent(rawContent);
+
+    // 清理克隆元素（释放内存）
+    clonedContentDiv.innerHTML = '';
+
+    // 内容长度检查
+    const contentLength = cleanedContent.length;
+    console.log(`📊 [内容统计] 原始长度: ${rawContent.length}, 清洗后: ${contentLength}`);
+
+    if (contentLength < CONFIG.minContentLength) {
+      const proceed = confirm(
+        `⚠️ 检测到内容较短（${contentLength}字），可能不是完整的章节内容。\n\n` +
+        `章节标题: ${title}\n` +
+        `内容长度: ${contentLength}字\n\n` +
+        `是否继续下载？`
+      );
+      if (!proceed) {
+        console.log('❌ [单章下载] 用户取消（内容过短）');
+        return;
+      }
+    }
+
+    // 构建文件内容
+    const fileContent = `${title}\n\n${cleanedContent}\n\n-----------------------\n下载链接：${document.URL}\n下载时间：${new Date().toLocaleString('zh-CN')}\n`;
+
+    // 生成下载文件
+    const blob = new Blob([fileContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${title}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    console.log(`✅ [单章下载] 完成: ${title}.txt (${contentLength}字)`);
+    showToast(`✅ 已下载：${title}\n${contentLength}字`, 'success', 3000);
+  }
+
+  /**
+   * 在章节页添加"下载本章节"按钮
+   */
+  function addCurrentChapterDownloadButton() {
+    // 检查是否是章节页（通过是否有内容元素判断）
+    const siteConfig = detectSiteStructure();
+    let contentDiv = null;
+    for (const selector of siteConfig.content) {
+      contentDiv = document.querySelector(selector);
+      if (contentDiv && contentDiv.innerText.trim().length > 50) break;
+    }
+
+    // 如果不是章节页，不添加按钮
+    if (!contentDiv) {
+      return false;
+    }
+
+    // 防止重复添加
+    if (document.querySelector('button#downloadCurrentChapterBtn')) {
+      return true;
+    }
+
+    // 查找h1标题元素
+    const h1 = document.querySelector('h1');
+    if (!h1) {
+      return false;
+    }
+
+    // 创建按钮
+    const downloadBtn = document.createElement('button');
+    downloadBtn.id = 'downloadCurrentChapterBtn';
+    downloadBtn.innerText = '下载本章节';
+    downloadBtn.style.cssText = 'padding:2px 10px; margin:auto 10px; font-size:15px; background:#ccF8; cursor:pointer;';
+
+    // 绑定点击事件
+    downloadBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      downloadCurrentChapter();
+    });
+
+    // 添加到h1标题旁边
+    h1.appendChild(downloadBtn);
+    console.log('✅ [单章下载按钮] 已添加到页面');
+
+    return true;
+  }
+
+  // 注册菜单命令
+  GM_registerMenuCommand('📖 下载当前章节', downloadCurrentChapter);
+  GM_registerMenuCommand('🎯 手动标记内容页', () => {
+    ElementPicker.start('content', (rule) => {
+      console.log('✅ [手动标记] 规则已保存:', rule);
+      showToast('✅ 内容页规则已保存！现在可以使用「📖 下载当前章节」功能了', 'success', 4000);
+    });
+  });
+
+  // 页面加载完成后尝试添加按钮
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(addCurrentChapterDownloadButton, 500);
+    });
+  } else {
+    // 延迟执行，确保页面渲染完成
+    setTimeout(addCurrentChapterDownloadButton, 500);
+  }
+
+  // 使用 MutationObserver 监听页面变化，在章节页也添加按钮
+  const chapterPageObserver = new MutationObserver(() => {
+    addCurrentChapterDownloadButton();
+  });
+
+  chapterPageObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
 })();
