@@ -1053,6 +1053,11 @@
       this._removeMouseListeners();
       if (this._toolbar) { this._toolbar.remove(); this._toolbar = null; }
       if (this._menu)    { this._menu.remove();    this._menu = null;    }
+      // 清理 outsideClick 监听器
+      if (this._outsideClickHandler) {
+        document.removeEventListener('click', this._outsideClickHandler, true);
+        this._outsideClickHandler = null;
+      }
       this._clearHighlight();
       // 清除所有已标记元素的颜色
       document.querySelectorAll('.bqg-picker-marked').forEach(el => el.classList.remove('bqg-picker-marked'));
@@ -1226,6 +1231,12 @@
 
     // 显示气泡类型选择菜单（带层级导航）
     _showMenu(el, cx, cy) {
+      // 移除旧的 outsideClick 监听器
+      if (this._outsideClickHandler) {
+        document.removeEventListener('click', this._outsideClickHandler, true);
+        this._outsideClickHandler = null;
+      }
+
       if (this._menu) { this._menu.remove(); this._menu = null; }
       const types = this._modeTypes[this._mode] || [];
 
@@ -1410,13 +1421,15 @@
       });
 
       // 点击菜单外部关闭
-      const outsideClick = (e) => {
+      this._outsideClickHandler = (e) => {
         if (this._menu && !this._menu.contains(e.target)) {
-          this._menu.remove(); this._menu = null;
-          document.removeEventListener('click', outsideClick, true);
+          this._menu.remove();
+          this._menu = null;
+          document.removeEventListener('click', this._outsideClickHandler, true);
+          this._outsideClickHandler = null;
         }
       };
-      setTimeout(() => document.addEventListener('click', outsideClick, true), 20);
+      setTimeout(() => document.addEventListener('click', this._outsideClickHandler, true), 20);
     },
 
     // 完成标记：校验 → 组装规则 → 保存
