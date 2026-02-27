@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         笔趣阁下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.9.3
-// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net）
+// @version      0.9.4
+// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net|alicesw.com）
 // @author       Licxisky
 // @match        https://www.beqege.cc/*/
 // @match        https://www.bbiquge.la/*/
@@ -10,6 +10,7 @@
 // @match        https://www.bqg862.xyz/*
 // @match        https://www.bqg283.cc/*
 // @match        https://www.snapd.net/read/*/
+// @match        https://www.alicesw.com/other/chapters/id/*.html
 // @match        https://www.biquge.net/*/*
 // @match        *://*/*/book/*
 // @match        *://*/*/novel/*
@@ -126,6 +127,14 @@
       tocPattern: '最新章节列表',
       chapters: 'dl > dd > a[href*="/read/"]',
       content: ['#chaptercontent', 'div#content', '.content'],
+      title: 'h1',
+      bookInfo: 'h1'
+    },
+    {
+      name: 'alicesw.com',
+      toc: 'ul.mulu_list',
+      chapters: 'ul.mulu_list > li > a[href]',
+      content: ['.read-content', 'div#content', '#chaptercontent', '.content'],
       title: 'h1',
       bookInfo: 'h1'
     }
