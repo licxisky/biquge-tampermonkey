@@ -1224,27 +1224,90 @@
       }
     },
 
-    // 显示气泡类型选择菜单
+    // 显示气泡类型选择菜单（带层级导航）
     _showMenu(el, cx, cy) {
       if (this._menu) { this._menu.remove(); this._menu = null; }
       const types = this._modeTypes[this._mode] || [];
-      const sel = this.generateSelector(el);
+
+      // 构建元素层级路径（从 body 到当前元素）
+      const buildElementPath = (element) => {
+        const path = [];
+        let current = element;
+
+        while (current && current !== document.body) {
+          const tagName = current.tagName.toLowerCase();
+          const id = current.id ? `#${current.id}` : '';
+          const className = current.className && typeof current.className === 'string'
+            ? `.${current.className.split(' ')[0]}`
+            : '';
+
+          // 生成描述性标签
+          let label = tagName;
+          if (id) label += id;
+          else if (className) label += className;
+
+          // 获取元素的简短内容作为提示（最多20字）
+          let contentHint = '';
+          if (current.children.length === 0) {
+            const text = current.textContent?.trim().slice(0, 20) || '';
+            if (text) contentHint = `: "${text}${current.textContent.length > 20 ? '...' : ''}"`;
+          }
+
+          path.push({
+            element: current,
+            label: label + contentHint,
+            tagName: tagName,
+            selector: this.generateSelector(current)
+          });
+
+          current = current.parentElement;
+        }
+
+        return path.reverse(); // 反转，从 body 到目标元素
+      };
+
+      const elementPath = buildElementPath(el);
 
       const menu = document.createElement('div');
       menu.id = 'bqg-picker-menu';
       menu.innerHTML = `
-        <div style="font-size:11px;color:#999;margin-bottom:8px;word-break:break-all;">
-          <code style="background:#f5f5f5;padding:2px 6px;border-radius:4px;font-size:11px;">${sel}</code>
+        <!-- 元素层级导航 -->
+        <div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #e0e0e0;">
+          <div style="font-size:11px;color:#666;margin-bottom:8px;">📍 元素路径（点击选择层级）：</div>
+          <div class="bqg-picker-breadcrumb" style="display:flex;flex-wrap:wrap;gap:4px;font-size:11px;">
+            ${elementPath.map((item, index) => `
+              <span class="bqg-picker-crumb ${index === elementPath.length - 1 ? 'bqg-picker-crumb-active' : ''}"
+                data-index="${index}"
+                data-selector="${item.selector}"
+                title="${item.label}">
+                ${item.label}
+              </span>
+            `).join('<span style="color:#999;"> › </span>')}
+          </div>
+          <div style="font-size:10px;color:#999;margin-top:6px;">
+            💡 提示：点击上方层级可切换到父元素
+          </div>
         </div>
+
+        <!-- 当前选中元素的选择器 -->
+        <div style="font-size:11px;color:#999;margin-bottom:8px;word-break:break-all;">
+          <code class="bqg-picker-selector-code" style="background:#f5f5f5;padding:2px 6px;border-radius:4px;font-size:11px;">${this.generateSelector(el)}</code>
+        </div>
+
+        <!-- 类型选择 -->
         <div style="font-size:12px;color:#666;margin-bottom:10px;">请选择此元素的类型：</div>
         ${types.map(t => {
           const done = this._picked[t.key] ? '✓ ' : '';
-          return `<div class="bqg-picker-menu-item ${this._picked[t.key] ? 'bqg-picker-menu-done' : ''}"
+          return `<div class="bqg-picker-menu-item bqg-picker-type-item ${this._picked[t.key] ? 'bqg-picker-menu-done' : ''}"
             data-key="${t.key}" title="${t.desc}">${done}${t.label}</div>`;
         }).join('')}
         <div class="bqg-picker-menu-item bqg-picker-menu-cancel">✗ 不标记</div>`;
       document.body.appendChild(menu);
       this._menu = menu;
+
+      // 保存元素路径供后续使用
+      this._currentElementPath = elementPath;
+      this._currentSelectedElement = el;
 
       // 先设初始位置，渲染后修正溢出
       menu.style.left = (cx + 8) + 'px';
@@ -1262,6 +1325,40 @@
 
       // 点击菜单项
       menu.addEventListener('click', (e) => {
+        // 1. 处理面包屑点击（切换元素层级）
+        const crumb = e.target.closest('.bqg-picker-crumb');
+        if (crumb) {
+          e.stopPropagation();
+          const index = parseInt(crumb.dataset.index);
+          const elementPath = this._currentElementPath;
+          const selectedEl = elementPath[index].element;
+
+          // 更新高亮元素
+          if (this._highlight) {
+            this._highlight.classList.remove('bqg-picker-highlight');
+          }
+          selectedEl.classList.add('bqg-picker-highlight');
+          this._highlight = selectedEl;
+
+          // 更新选择器显示
+          const newSel = this.generateSelector(selectedEl);
+          menu.querySelector('.bqg-picker-selector-code').textContent = newSel;
+
+          // 更新面包屑激活状态
+          menu.querySelectorAll('.bqg-picker-crumb').forEach((c, i) => {
+            if (i <= index) {
+              c.classList.add('bqg-picker-crumb-active');
+            } else {
+              c.classList.remove('bqg-picker-crumb-active');
+            }
+          });
+
+          // 保存当前选择的元素
+          this._currentSelectedElement = selectedEl;
+          return;
+        }
+
+        // 2. 处理类型选择项点击
         const item = e.target.closest('.bqg-picker-menu-item');
         if (!item) return;
         e.stopPropagation();
@@ -1269,8 +1366,14 @@
           menu.remove(); this._menu = null;
           return;
         }
+
         const key = item.dataset.key;
         const typeInfo = types.find(t => t.key === key);
+
+        // 使用当前选择的元素（可能是通过面包屑选择的）
+        const selectedEl = this._currentSelectedElement || el;
+        const sel = this.generateSelector(selectedEl);
+
         this._picked[key] = sel;
 
         // 标记目录容器时，自动推导章节链接选择器
@@ -1297,10 +1400,13 @@
         }
 
         // 保持绿色边框提示用户已标记
-        el.classList.remove('bqg-picker-highlight');
-        el.classList.add('bqg-picker-marked');
+        selectedEl.classList.remove('bqg-picker-highlight');
+        selectedEl.classList.add('bqg-picker-marked');
         menu.remove(); this._menu = null;
         this._refreshBadges();
+
+        // 清除临时状态
+        this._currentSelectedElement = null;
       });
 
       // 点击菜单外部关闭
@@ -1996,6 +2102,27 @@
             border-top: 1px solid #f0f0f0;
             margin-top: 4px;
             padding-top: 10px;
+        }
+        /* 元素层级面包屑样式 */
+        .bqg-picker-crumb {
+            padding: 4px 8px;
+            background: #f0f0f0;
+            border-radius: 12px;
+            cursor: pointer;
+            color: #666;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+        .bqg-picker-crumb:hover {
+            background: #e3f2fd;
+            border-color: #2196f3;
+            color: #1976d2;
+        }
+        .bqg-picker-crumb-active {
+            background: #2196f3;
+            color: white;
+            border-color: #1976d2;
+            font-weight: 600;
         }
     `);
 
