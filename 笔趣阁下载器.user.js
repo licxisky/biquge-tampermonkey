@@ -85,6 +85,7 @@
   const SITE_SELECTORS = [
     {
       name: 'beqege/bigee/bqgui',
+      hostname: 'beqege.cc', // 添加 hostname 字段（使用主域名）
       toc: '#list',
       chapters: 'dl dd > a[href]',
       chaptersAlt: 'dl center.clear ~ dd > a[href]',
@@ -94,6 +95,7 @@
     },
     {
       name: 'listmain',
+      hostname: 'bqgui.cc', // 添加 hostname 字段
       toc: '.listmain',
       chapters: 'dl dd > a[href]',
       content: ['#chaptercontent', 'div#content', '.content'],
@@ -102,6 +104,7 @@
     },
     {
       name: 'list-chapter',
+      hostname: 'bqgui.cc', // 添加 hostname 字段
       toc: '.list-chapter',
       chapters: 'div.booklist > ul > li > a[href]',
       content: ['.content', 'div#content', '#chaptercontent'],
@@ -110,6 +113,7 @@
     },
     {
       name: 'biquge.net',
+      hostname: 'biquge.net', // 添加 hostname 字段
       toc: 'div.section-box',
       chapters: 'div.section-box ul.section-list li > a[href]',
       content: ['div.reader-main', 'div#content', '#chaptercontent', '.content', '#htmlContent'],
@@ -118,6 +122,7 @@
     },
     {
       name: 'snapd.net',
+      hostname: 'snapd.net', // 添加 hostname 字段
       toc: 'dl',
       tocPattern: '最新章节列表',
       chapters: 'dl > dd > a[href*="/read/"]',
@@ -127,6 +132,7 @@
     },
     {
       name: 'alicesw.com',
+      hostname: 'alicesw.com', // 添加 hostname 字段
       toc: 'ul.mulu_list',
       chapters: 'ul.mulu_list > li > a[href]',
       content: ['.read-content', 'div#content', '#chaptercontent', '.content'],
@@ -135,6 +141,7 @@
     },
     {
       name: '3haitang.com',
+      hostname: '3haitang.com', // 添加 hostname 字段
       toc: 'ul',
       tocPattern: '最新章节列表',
       chapters: 'ul > li > a[href]',
@@ -144,6 +151,7 @@
     },
     {
       name: 'shibashiwu.net',
+      hostname: 'shibashiwu.net', // 添加 hostname 字段
       toc: 'ul',
       tocPattern: '正文',
       chapters: 'ul > li > a[href]',
@@ -1441,10 +1449,13 @@
         return;
       }
 
+      const currentHostname = window.location.hostname;
+
       let rule;
       if (this._mode === 'toc') {
         rule = {
-          name:     window.location.hostname,
+          name:     currentHostname,
+          hostname: currentHostname,  // 添加 hostname 字段用于精确匹配
           toc:      this._picked.toc,
           chapters: this._picked.chapters || (this._picked.toc + ' a[href]'),
           content:  ['div#content', '#chaptercontent', '.content'],
@@ -1455,7 +1466,8 @@
         // 内容页规则：复用已有目录规则中的 toc/chapters/title
         const base = currentSiteSelector || {};
         rule = {
-          name:     window.location.hostname,
+          name:     currentHostname,
+          hostname: currentHostname,  // 添加 hostname 字段用于精确匹配
           toc:      base.toc      || '',
           chapters: base.chapters || '',
           title:    base.title    || 'h1',
@@ -2428,7 +2440,22 @@
 
   // 检测站点结构（选择器策略模式）
   function detectSiteStructure() {
-    for (const selector of SITE_SELECTORS) {
+    const currentHostname = window.location.hostname;
+
+    // 1. 优先检查自定义规则中是否有 hostname 精确匹配
+    const customRules = SiteRuleManager.getCustomRules();
+    const hostnameMatchedRule = customRules.find(rule =>
+      rule.hostname && rule.hostname === currentHostname
+    );
+
+    if (hostnameMatchedRule) {
+      console.log(`[站点检测] 使用自定义规则（hostname匹配）: ${hostnameMatchedRule.name}`);
+      return hostnameMatchedRule;
+    }
+
+    // 2. 遍历内置规则（包括自定义规则中无 hostname 的）
+    const allRules = SiteRuleManager.getAllRules();
+    for (const selector of allRules) {
       // 检查基本 toc 选择器是否存在
       const tocElement = document.querySelector(selector.toc);
       if (!tocElement) continue;
@@ -2459,9 +2486,11 @@
         if (!patternMatched) continue;
       }
 
-      console.log(`[站点检测] 使用 ${selector.name} 选择器策略`);
+      const ruleType = selector.custom ? '自定义规则' : '内置规则';
+      console.log(`[站点检测] 使用 ${ruleType} - ${selector.name} 选择器策略`);
       return selector;
     }
+
     console.warn('[站点检测] 未匹配到已知站点，使用默认策略');
     showToast('⚠️ 未能识别当前站点，建议使用「🎯 手动标记」功能设置规则', 'warn', 4500);
     return SITE_SELECTORS[0]; // 默认使用第一个
