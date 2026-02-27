@@ -2650,6 +2650,84 @@
   }
 
   /**
+   * 刷新章节列表（用于手动标记后重新加载）
+   */
+  async function refreshChapters() {
+    if (!currentSiteSelector) {
+      console.error('❌ [刷新章节] currentSiteSelector 为空');
+      return false;
+    }
+
+    console.log('🔄 [刷新章节] 开始重新加载章节列表...');
+    console.log(`   使用规则: ${currentSiteSelector.name}`);
+    console.log(`   目录选择器: ${currentSiteSelector.toc}`);
+    console.log(`   章节选择器: ${currentSiteSelector.chapters}`);
+
+    tocDiv = document.querySelector(currentSiteSelector.toc);
+
+    if (!tocDiv) {
+      console.error(`❌ [刷新章节] 未找到目录容器: ${currentSiteSelector.toc}`);
+      showToast('未找到目录容器，请检查选择器是否正确', 'error');
+      return false;
+    }
+
+    // 检测是否需要分页加载
+    const needsPagination = detectPaginationNeeded(currentSiteSelector);
+
+    if (needsPagination) {
+      console.log('📖 [分页模式] 检测到分页，开始加载所有分页...');
+      showToast('检测到分页，正在加载所有章节...', 'info');
+
+      // 异步加载所有分页的章节
+      chapters = await loadPaginatedChapters(currentSiteSelector, tocDiv);
+
+      if (!chapters.length) {
+        showToast('未找到章节列表，请检查选择器是否正确', 'error');
+        return false;
+      }
+
+      console.log(`✅ [分页完成] 共获取 ${chapters.length} 个章节`);
+    } else {
+      console.log('📖 [单页模式] 无分页，使用单页加载');
+      // 单页模式：获取章节列表
+      chapters = document.querySelectorAll(currentSiteSelector.chapters);
+
+      if (!chapters.length) {
+        showToast('未找到章节列表，请检查选择器是否正确', 'error');
+        return false;
+      }
+
+      // 章节去重
+      const seenUrls = new Set();
+      const uniqueChapters = [];
+      for (const chapter of chapters) {
+        const href = chapter.getAttribute('href');
+        if (href && !seenUrls.has(href)) {
+          seenUrls.add(href);
+          uniqueChapters.push(chapter);
+        }
+      }
+      chapters = uniqueChapters;
+    }
+
+    // 更新UI
+    startRangeInput.max = chapters.length;
+    finalRangeInput.max = chapters.length;
+    startIndex = 0;
+    finalIndex = chapters.length - 1;
+    finalRangeInput.value = chapters.length;
+    startTitle.innerText = chapters[startIndex].innerText;
+    finalTitle.innerText = chapters[finalIndex].innerText;
+
+    // 更新书籍信息
+    bookInfo.innerText = `当前小说:《${booktitle}》，共 ${chapters.length} 章。`;
+
+    console.log(`✅ [刷新完成] 共加载 ${chapters.length} 个章节`);
+    showToast(`✅ 章节列表已刷新，共 ${chapters.length} 章`, 'success');
+    return true;
+  }
+
+  /**
    * 异步加载分页章节
    */
   async function loadPaginatedChapters(siteConfig, tocDiv) {
@@ -3200,10 +3278,16 @@
   pickTocButton.addEventListener('click', () => {
     // 关闭主 modal，进入标记模式
     modal.style.display = 'none';
-    ElementPicker.start('toc', (rule) => {
+    ElementPicker.start('toc', async () => {
       // 完成后重新打开主 modal
       modal.style.display = 'flex';
-      showToast('✅ 目录页规则已保存，已自动应用至本次下载', 'success', 3000);
+      showToast('✅ 目录页规则已保存，正在刷新章节列表...', 'success', 3000);
+
+      // 刷新章节列表
+      const success = await refreshChapters();
+      if (!success) {
+        showToast('⚠️ 章节列表刷新失败，请检查选择器是否正确', 'warn', 4000);
+      }
     });
   });
 
