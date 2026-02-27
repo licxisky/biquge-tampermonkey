@@ -1,0 +1,3 @@
+[     891ms] TypeError: Cannot read properties of null (reading 'split')
+    at lists (https://www.snapd.net/js/compc.js?v=1.23:57:59)
+    at https://www.snapd.net/read/171386/:138:14

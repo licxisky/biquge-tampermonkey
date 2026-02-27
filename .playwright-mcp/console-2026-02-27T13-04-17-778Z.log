@@ -1,0 +1,10 @@
+[    8182ms] [ERROR] Mixed Content: The page at 'https://www.3haitang.com/book/3348/' was loaded over HTTPS, but requested an insecure script 'http://apps.bdimg.com/libs/jquery/1.7.2/jquery.min.js'. This request has been blocked; the content must be served over HTTPS. @ https://www.3haitang.com/book/3348/:0
+[    8203ms] ReferenceError: jQuery is not defined
+    at https://www.3haitang.com/static/js/common.js:1:4489
+[    8205ms] TypeError: Cannot read properties of undefined (reading 'jieqiUserId')
+    at login (https://www.3haitang.com/static/js/common.js:8:32)
+    at https://www.3haitang.com/book/3348/:59:25
+[    8206ms] ReferenceError: $ is not defined
+    at readbook (https://www.3haitang.com/static/js/common.js:9:22)
+    at https://www.3haitang.com/book/3348/:254:32
+[    8477ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://www.3haitang.com/files/article/image/3/3348/3348s.jpg:0

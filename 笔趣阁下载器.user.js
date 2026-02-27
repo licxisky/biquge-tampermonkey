@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         笔趣阁下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.9.5
+// @version      0.9.6
 // @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net|alicesw.com|3haitang.com)
 // @author       Licxisky
 // @match        https://www.beqege.cc/*/
@@ -1720,14 +1720,27 @@
 
       // 如果配置了 tocPattern，需要验证内容匹配
       if (selector.tocPattern) {
-        const dtElements = tocElement.querySelectorAll(':scope > dt');
+        // 检查 toc 元素及其前面的兄弟元素是否包含模式文本
+        // 这样可以匹配 dt、h2、h3 等各种标题元素
         let patternMatched = false;
-        for (const dt of dtElements) {
-          if (dt.textContent.includes(selector.tocPattern)) {
-            patternMatched = true;
-            break;
+
+        // 首先检查 toc 元素自身的文本内容
+        if (tocElement.textContent.includes(selector.tocPattern)) {
+          patternMatched = true;
+        } else {
+          // 检查 toc 元素前面的兄弟元素（通常是标题）
+          let prevSibling = tocElement.previousElementSibling;
+          let checkedCount = 0;
+          while (prevSibling && checkedCount < 3) {
+            if (prevSibling.textContent.includes(selector.tocPattern)) {
+              patternMatched = true;
+              break;
+            }
+            prevSibling = prevSibling.previousElementSibling;
+            checkedCount++;
           }
         }
+
         if (!patternMatched) continue;
       }
 
