@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         笔趣阁下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.9.8
-// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）、手动元素标记（AdGuard风格）。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net|alicesw.com|3haitang.com|shibashiwu.net)
+// @version      0.9.9
+// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）、手动元素标记（AdGuard风格）、章节列表分页支持（自动检测并加载所有分页）。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net|alicesw.com|3haitang.com|shibashiwu.net)
 // @author       Licxisky
 // @match        *://*/*
 // @exclude      *://baidu.com/*
@@ -32,7 +32,13 @@
     enableDetection: localStorage.getItem('bqg_enableDetection') !== 'false',
     duplicateThreshold: parseFloat(localStorage.getItem('bq_duplicateThreshold') || '0.85'),
     adThreshold: parseInt(localStorage.getItem('bqg_adThreshold') || '20'),
-    disableResume: localStorage.getItem('bqg_disableResume') === 'true'
+    disableResume: localStorage.getItem('bqg_disableResume') === 'true',
+    // 分页配置
+    maxTocPages: parseInt(localStorage.getItem('bqg_maxTocPages') || '10'),
+    maxTocPagesHardLimit: 50,
+    maxTotalChapters: 5000,
+    paginationRetry: parseInt(localStorage.getItem('bqg_paginationRetry') || '3'),
+    paginationTimeout: parseInt(localStorage.getItem('bqg_paginationTimeout') || '10000')
   };
 
   // 显示当前配置状态
@@ -41,6 +47,7 @@
   console.log(`   断点续传: ${CONFIG.disableResume ? '禁用' : '启用'}`);
   console.log(`   智能限流: ${CONFIG.throttleMin} ~ ${CONFIG.throttleMax}`);
   console.log(`   内容检测: ${CONFIG.enableDetection ? '启用' : '禁用'}`);
+  console.log(`   分页支持: 最大${CONFIG.maxTocPages}页（上限${CONFIG.maxTocPagesHardLimit}页）`);
 
   // 显示现有缓存
   const existingCaches = [];
@@ -370,7 +377,127 @@
       this.currentType = 'toc';
       return result;
     },
-    
+
+    // 检测目录页的分页信息
+    detectTocPagination() {
+      const result = {
+        hasNextPage: false,
+        nextPageSelector: '',
+        nextPagePattern: '',
+        paginationContainer: '',
+        confidence: 'low'
+      };
+
+      // 1. 尝试常见的下一页选择器
+      const commonSelectors = [
+        'a.next-page',
+        'a.next',
+        'a[rel="next"]',
+        '.pagination a.next',
+        '.pager a.next',
+        'li.next a',
+        'li.next-page a',
+        '#next-page',
+        'a:has-text("下一页")',
+        'a:has-text("下页")',
+        'a:has-text("Next")',
+        'a:has-text("»")'
+      ];
+
+      // 2. 先尝试配置的选择器
+      for (const selector of commonSelectors) {
+        try {
+          // 注意：a:has-text() 语法需要特殊处理
+          if (selector.includes(':has-text(')) {
+            const text = selector.match(/"([^"]+)"/)[1];
+            const links = document.querySelectorAll('a');
+            for (const link of links) {
+              if (link.innerText.trim() === text) {
+                result.nextPageSelector = `a:has-text("${text}")`;
+                result.hasNextPage = true;
+                result.confidence = 'high';
+                result.nextPagePattern = text;
+                break;
+              }
+            }
+            if (result.hasNextPage) break;
+          } else {
+            const el = document.querySelector(selector);
+            if (el) {
+              result.nextPageSelector = selector;
+              result.hasNextPage = true;
+              result.confidence = 'high';
+              break;
+            }
+          }
+        } catch (e) {
+          // 忽略选择器错误
+        }
+      }
+
+      // 3. 检测分页容器（页码列表）
+      const paginationContainers = document.querySelectorAll('.pagination, .page, .pager, .page-list, .pagelist');
+      if (paginationContainers.length > 0) {
+        for (const container of paginationContainers) {
+          const links = container.querySelectorAll('a');
+          if (links.length >= 2) {
+            // 检查是否有明确的下一页或页码模式
+            const hasPageNumbers = Array.from(links).some(l => l.innerText.match(/^\d+$/));
+            if (hasPageNumbers) {
+              result.paginationContainer = container.className ? `.${container.className.split(' ')[0]}` : 'pagination';
+              result.confidence = 'medium';
+              break;
+            }
+          }
+        }
+      }
+
+      // 4. 尝试通过文本匹配查找下一页
+      if (!result.hasNextPage) {
+        const allLinks = document.querySelectorAll('a');
+        const nextPagePatterns = ['下一页', '下页', '下1页', 'next', 'next page', '»'];
+        for (const link of allLinks) {
+          const text = link.innerText.trim().toLowerCase();
+          if (nextPagePatterns.some(pattern => text.includes(pattern.toLowerCase()))) {
+            result.nextPagePattern = link.innerText.trim();
+            result.hasNextPage = true;
+            result.confidence = 'medium';
+            break;
+          }
+        }
+      }
+
+      // 5. 尝试通过URL模式检测（如 page=2, p/2 等）
+      if (!result.hasNextPage) {
+        const currentUrl = window.location.href;
+        const urlMatch = currentUrl.match(/(page|p|pageindex)[-_]?(\d+)|\/(\d+)\.html/i);
+        if (urlMatch) {
+          // 检测到页码模式，尝试查找下一页链接
+          const currentPage = parseInt(urlMatch[2] || urlMatch[3]);
+          if (currentPage) {
+            const nextPageUrl = currentUrl.replace(/(page|p|pageindex)[-_]?(\d+)|\/(\d+)\.html/i,
+              () => {
+                // 根据匹配类型生成下一页URL
+                if (urlMatch[1]) return `${urlMatch[1]}${currentPage + 1}`;
+                return `/${currentPage + 1}.html`;
+              });
+            // 检查是否存在这个URL的链接
+            const allLinks = document.querySelectorAll('a');
+            for (const link of allLinks) {
+              if (link.href === nextPageUrl) {
+                result.nextPagePattern = 'URL模式检测';
+                result.hasNextPage = true;
+                result.confidence = 'low';
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      return result;
+    },
+
     // 分析内容页规则
     analyzeContentPage() {
       const result = {
@@ -2320,7 +2447,221 @@
     }
   }
 
-  function downloadMenu() {
+  /**
+   * 检测是否需要分页加载
+   */
+  function detectPaginationNeeded(siteConfig) {
+    // 1. 优先使用站点配置
+    if (siteConfig.tocNextPage) {
+      const nextEl = document.querySelector(siteConfig.tocNextPage);
+      if (nextEl) return true;
+    }
+
+    // 2. 使用自动检测
+    const paginationInfo = RuleAnalyzer.detectTocPagination();
+    return paginationInfo.hasNextPage;
+  }
+
+  /**
+   * 查找下一页URL
+   */
+  async function findNextPageUrl(currentDoc, siteConfig, currentUrl) {
+    // 1. 优先使用配置的选择器
+    if (siteConfig.tocNextPage) {
+      const nextEl = currentDoc.querySelector(siteConfig.tocNextPage);
+      if (nextEl && nextEl.href) {
+        return nextEl.href.startsWith('http') ? nextEl.href : new URL(nextEl.href, currentUrl).href;
+      }
+    }
+
+    // 2. 尝试文本匹配
+    if (siteConfig.tocNextPagePattern) {
+      const allLinks = currentDoc.querySelectorAll('a');
+      for (const link of allLinks) {
+        if (link.innerText.trim() === siteConfig.tocNextPagePattern) {
+          return link.href.startsWith('http') ? link.href : new URL(link.href, currentUrl).href;
+        }
+      }
+    }
+
+    // 3. 使用自动检测结果
+    const paginationInfo = RuleAnalyzer.detectTocPagination();
+    if (paginationInfo.hasNextPage) {
+      if (paginationInfo.nextPageSelector && !paginationInfo.nextPageSelector.includes(':has-text')) {
+        const nextEl = currentDoc.querySelector(paginationInfo.nextPageSelector);
+        if (nextEl && nextEl.href) {
+          return nextEl.href.startsWith('http') ? nextEl.href : new URL(nextEl.href, currentUrl).href;
+        }
+      }
+
+      // 尝试通过文本匹配
+      if (paginationInfo.nextPagePattern) {
+        const allLinks = currentDoc.querySelectorAll('a');
+        for (const link of allLinks) {
+          if (link.innerText.trim() === paginationInfo.nextPagePattern ||
+            link.innerText.trim().toLowerCase().includes(paginationInfo.nextPagePattern.toLowerCase())) {
+            return link.href.startsWith('http') ? link.href : new URL(link.href, currentUrl).href;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 异步加载分页章节
+   */
+  async function loadPaginatedChapters(siteConfig, tocDiv) {
+    const allChapters = [];
+    const seenUrls = new Set();
+    const loadedUrls = new Set();
+    let currentPageUrl = window.location.href;
+    let pageCount = 0;
+    const maxPages = Math.min(siteConfig.tocMaxPages || CONFIG.maxTocPages, CONFIG.maxTocPagesHardLimit);
+    let currentDoc = null; // 保存当前页的文档，避免重复fetch
+
+    console.log(`📄 [分页检测] 开始检测，最大页数: ${maxPages}`);
+
+    try {
+      while (currentPageUrl && pageCount < maxPages) {
+        pageCount++;
+
+        // 第一页：直接从当前DOM获取
+        if (pageCount === 1) {
+          console.log(`📄 [第 ${pageCount} 页] 从当前页面加载...`);
+
+          // 获取第一页的章节
+          const firstPageChapters = document.querySelectorAll(siteConfig.chapters);
+          for (const chapter of firstPageChapters) {
+            const href = chapter.getAttribute('href');
+            if (href && !seenUrls.has(href)) {
+              seenUrls.add(href);
+              allChapters.push(chapter);
+            }
+          }
+
+          console.log(`✅ [第 ${pageCount} 页] 获取 ${firstPageChapters.length} 个章节，累计 ${allChapters.length} 章`);
+
+          // 检查是否达到章节数上限
+          if (allChapters.length >= CONFIG.maxTotalChapters) {
+            console.warn(`⚠️ [分页限制] 已达到最大章节数限制（${CONFIG.maxTotalChapters}章）`);
+            break;
+          }
+
+          // 记录已加载的URL
+          loadedUrls.add(currentPageUrl);
+          currentDoc = document; // 保存第一页文档
+        } else {
+          // 后续页：通过fetch加载
+          console.log(`📄 [第 ${pageCount} 页] 正在加载: ${currentPageUrl}`);
+
+          // 显示加载提示
+          showToast(`正在加载第 ${pageCount} 页...`, 'info');
+
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), CONFIG.paginationTimeout);
+
+            const response = await fetch(currentPageUrl, {
+              signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+              console.warn(`⚠️ [第 ${pageCount} 页] 加载失败: ${response.status}`);
+              break;
+            }
+
+            const html = await response.text();
+            const parser = new DOMParser();
+            currentDoc = parser.parseFromString(html, 'text/html');
+
+            // 检查循环
+            if (loadedUrls.has(currentPageUrl)) {
+              console.warn(`⚠️ [分页循环] 检测到URL循环，停止加载`);
+              break;
+            }
+            loadedUrls.add(currentPageUrl);
+
+            // 提取当前页的章节
+            const pageTocDiv = currentDoc.querySelector(siteConfig.toc);
+            if (!pageTocDiv) {
+              console.warn(`⚠️ [第 ${pageCount} 页] 未找到目录容器`);
+              break;
+            }
+
+            const pageChapters = pageTocDiv.querySelectorAll(siteConfig.chapters);
+            let newChapterCount = 0;
+
+            for (const chapter of pageChapters) {
+              const href = chapter.getAttribute('href');
+              if (href && !seenUrls.has(href)) {
+                seenUrls.add(href);
+                allChapters.push(chapter);
+                newChapterCount++;
+              }
+            }
+
+            console.log(`✅ [第 ${pageCount} 页] 获取 ${newChapterCount} 个新章节，累计 ${allChapters.length} 章`);
+
+            // 检查是否达到章节数上限
+            if (allChapters.length >= CONFIG.maxTotalChapters) {
+              console.warn(`⚠️ [分页限制] 已达到最大章节数限制（${CONFIG.maxTotalChapters}章）`);
+              showToast(`已达到最大章节数限制（${CONFIG.maxTotalChapters}章）`, 'warning');
+              break;
+            }
+
+            // 如果这一页没有新章节，可能已经到最后一页
+            if (newChapterCount === 0) {
+              console.log(`📄 [第 ${pageCount} 页] 无新章节，可能已到最后一页`);
+              break;
+            }
+
+          } catch (error) {
+            if (error.name === 'AbortError') {
+              console.error(`⏱️ [第 ${pageCount} 页] 加载超时`);
+            } else {
+              console.error(`❌ [第 ${pageCount} 页] 加载失败:`, error);
+            }
+            break;
+          }
+        }
+
+        // 查找下一页
+        if (pageCount >= maxPages) {
+          console.log(`📄 [分页完成] 已达到最大分页数限制（${maxPages}页）`);
+          showToast(`已加载 ${pageCount} 页，共 ${allChapters.length} 章`, 'success');
+          break;
+        }
+
+        // 获取下一页URL（复用当前页文档，避免重复fetch）
+        currentPageUrl = await findNextPageUrl(currentDoc, siteConfig, currentPageUrl);
+
+        if (!currentPageUrl) {
+          console.log(`📄 [分页完成] 未找到下一页链接`);
+          break;
+        }
+
+        // 检查下一页URL是否已在加载列表中（循环检测）
+        if (loadedUrls.has(currentPageUrl)) {
+          console.warn(`⚠️ [分页循环] 检测到下一页URL已加载，停止`);
+          break;
+        }
+      }
+
+      console.log(`🎉 [分页加载完成] 共加载 ${pageCount} 页，${allChapters.length} 个章节`);
+      showToast(`分页加载完成：${pageCount} 页，${allChapters.length} 章`, 'success');
+
+    } catch (error) {
+      console.error('❌ [分页加载异常]', error);
+      showToast('分页加载出现异常', 'error');
+    }
+
+    return allChapters;
+  }
+
+  async function downloadMenu() {
     modal.style.display = 'flex';
 
     // 使用策略模式检测站点结构
@@ -2332,63 +2673,82 @@
       return;
     }
 
-    // 获取章节列表（支持备用选择器，智能过滤"最新章节"区域）
-    if (currentSiteSelector.chaptersAlt && tocDiv.querySelector('dl center.clear')) {
-      chapters = document.querySelectorAll(currentSiteSelector.chaptersAlt);
+    // 检测是否需要分页加载
+    const needsPagination = detectPaginationNeeded(currentSiteSelector);
+
+    if (needsPagination) {
+      console.log('📖 [分页模式] 检测到分页，开始加载所有分页...');
+      showToast('检测到分页，正在加载所有章节...', 'info');
+
+      // 异步加载所有分页的章节
+      chapters = await loadPaginatedChapters(currentSiteSelector, tocDiv);
+
+      if (!chapters.length) {
+        alert('未找到章节列表，请检查页面结构');
+        return;
+      }
+
+      console.log(`✅ [分页完成] 共获取 ${chapters.length} 个章节`);
     } else {
-      // 智能检测：查找"正文"/"全部章节"区域，跳过"最新章节"区域
-      // biquge.net 等站点有"最新章节"和"正文"两个区域，需要过滤
-      const sectionTitles = document.querySelectorAll('h2.layout-tit, h2');
-      let mainSectionBox = null;
-
-      for (let i = 0; i < sectionTitles.length; i++) {
-        const titleText = sectionTitles[i].innerText || '';
-        // 跳过"最新章节"区域
-        if (titleText.includes('最新章节') && !titleText.includes('正文')) {
-          continue;
-        }
-        // 找到包含"正文"/"全部章节"/"目录"的区域
-        if (titleText.includes('正文') || titleText.includes('全部章节') || titleText.includes('目录')) {
-          // 获取该标题后面的第一个 div.section-box
-          let nextElement = sectionTitles[i].nextElementSibling;
-          while (nextElement) {
-            if (nextElement.classList && nextElement.classList.contains('section-box')) {
-              mainSectionBox = nextElement;
-              break;
-            }
-            nextElement = nextElement.nextElementSibling;
-          }
-          if (mainSectionBox) break;
-        }
-      }
-
-      // 如果找到了主区域，只从该区域提取章节
-      if (mainSectionBox) {
-        // 提取选择器中的最终标签名（如 'a[href]'）
-        const chapterSelector = currentSiteSelector.chapters.split(' ').pop() || 'a[href]';
-        chapters = mainSectionBox.querySelectorAll(chapterSelector);
+      console.log('📖 [单页模式] 无分页，使用单页加载');
+      // 单页模式：获取章节列表（支持备用选择器，智能过滤"最新章节"区域）
+      if (currentSiteSelector.chaptersAlt && tocDiv.querySelector('dl center.clear')) {
+        chapters = document.querySelectorAll(currentSiteSelector.chaptersAlt);
       } else {
-        // 降级：使用原来的选择器
-        chapters = document.querySelectorAll(currentSiteSelector.chapters);
-      }
-    }
+        // 智能检测：查找"正文"/"全部章节"区域，跳过"最新章节"区域
+        // biquge.net 等站点有"最新章节"和"正文"两个区域，需要过滤
+        const sectionTitles = document.querySelectorAll('h2.layout-tit, h2');
+        let mainSectionBox = null;
 
-    if (!chapters.length) {
-      alert('未找到章节列表，请检查页面结构');
-      return;
-    }
+        for (let i = 0; i < sectionTitles.length; i++) {
+          const titleText = sectionTitles[i].innerText || '';
+          // 跳过"最新章节"区域
+          if (titleText.includes('最新章节') && !titleText.includes('正文')) {
+            continue;
+          }
+          // 找到包含"正文"/"全部章节"/"目录"的区域
+          if (titleText.includes('正文') || titleText.includes('全部章节') || titleText.includes('目录')) {
+            // 获取该标题后面的第一个 div.section-box
+            let nextElement = sectionTitles[i].nextElementSibling;
+            while (nextElement) {
+              if (nextElement.classList && nextElement.classList.contains('section-box')) {
+                mainSectionBox = nextElement;
+                break;
+              }
+              nextElement = nextElement.nextElementSibling;
+            }
+            if (mainSectionBox) break;
+          }
+        }
 
-    // 章节去重：基于 href 去重，保留第一次出现的顺序
-    const seenUrls = new Set();
-    const uniqueChapters = [];
-    for (const chapter of chapters) {
-      const href = chapter.getAttribute('href');
-      if (href && !seenUrls.has(href)) {
-        seenUrls.add(href);
-        uniqueChapters.push(chapter);
+        // 如果找到了主区域，只从该区域提取章节
+        if (mainSectionBox) {
+          // 提取选择器中的最终标签名（如 'a[href]'）
+          const chapterSelector = currentSiteSelector.chapters.split(' ').pop() || 'a[href]';
+          chapters = mainSectionBox.querySelectorAll(chapterSelector);
+        } else {
+          // 降级：使用原来的选择器
+          chapters = document.querySelectorAll(currentSiteSelector.chapters);
+        }
       }
+
+      if (!chapters.length) {
+        alert('未找到章节列表，请检查页面结构');
+        return;
+      }
+
+      // 章节去重：基于 href 去重，保留第一次出现的顺序
+      const seenUrls = new Set();
+      const uniqueChapters = [];
+      for (const chapter of chapters) {
+        const href = chapter.getAttribute('href');
+        if (href && !seenUrls.has(href)) {
+          seenUrls.add(href);
+          uniqueChapters.push(chapter);
+        }
+      }
+      chapters = uniqueChapters;
     }
-    chapters = uniqueChapters;
 
     startRangeInput.max = chapters.length;
     finalRangeInput.max = chapters.length;
