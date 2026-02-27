@@ -2502,11 +2502,19 @@
   function detectSiteStructure() {
     const currentHostname = window.location.hostname;
 
-    // 1. 优先检查自定义规则中是否有 hostname 精确匹配
+    // 辅助函数：提取主域名（去掉 www. 前缀）
+    const getMainDomain = (hostname) => {
+      return hostname.replace(/^www\./, '');
+    };
+
+    // 1. 优先检查自定义规则中是否有 hostname 匹配（支持 www 和非 www）
     const customRules = SiteRuleManager.getCustomRules();
-    const hostnameMatchedRule = customRules.find(rule =>
-      rule.hostname && rule.hostname === currentHostname
-    );
+    const hostnameMatchedRule = customRules.find(rule => {
+      if (!rule.hostname) return false;
+      // 精确匹配或主域名匹配
+      return rule.hostname === currentHostname ||
+             getMainDomain(rule.hostname) === getMainDomain(currentHostname);
+    });
 
     if (hostnameMatchedRule) {
       console.log(`[站点检测] 使用自定义规则（hostname匹配）: ${hostnameMatchedRule.name}`);
@@ -2519,6 +2527,13 @@
       // 检查基本 toc 选择器是否存在
       const tocElement = document.querySelector(selector.toc);
       if (!tocElement) continue;
+
+      // 如果配置了 hostname，先检查是否匹配
+      if (selector.hostname) {
+        const hostnameMatch = selector.hostname === currentHostname ||
+                               getMainDomain(selector.hostname) === getMainDomain(currentHostname);
+        if (!hostnameMatch) continue;
+      }
 
       // 如果配置了 tocPattern，需要验证内容匹配
       if (selector.tocPattern) {
