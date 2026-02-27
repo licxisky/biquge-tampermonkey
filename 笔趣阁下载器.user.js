@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         笔趣阁下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.9.9
-// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）、手动元素标记（AdGuard风格）、章节列表分页支持（自动检测并加载所有分页）。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net|alicesw.com|3haitang.com|shibashiwu.net)
+// @version      0.9.10
+// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）、手动元素标记（AdGuard风格）、章节列表分页支持（自动检测并加载所有分页）、GM_xmlhttpRequest 绕过 CORS 限制。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net|alicesw.com|3haitang.com|shibashiwu.net）
 // @author       Licxisky
 // @match        *://*/*
 // @exclude      *://baidu.com/*
@@ -10,10 +10,12 @@
 // @license      GPL-3.0
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
 // @namespace    https://greasyfork.org/scripts/500170
 // @supportURL   https://greasyfork.org/scripts/500170
 // @homepageURL  https://greasyfork.org/scripts/500170
 // @icon         https://www.beqege.cc/favicon.ico
+// @connect       *
 // ==/UserScript==
 
 (function() {
@@ -160,6 +162,39 @@
       bookInfo: 'h1'
     }
   ];
+
+  // GM_xmlhttpRequest Promise 封装（绕过 CORS 限制）
+  function gmFetch(url) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'undefined') {
+        // 使用 Tampermonkey 的 GM_xmlhttpRequest API
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: url,
+          onload: (response) => {
+            resolve({
+              ok: response.status >= 200 && response.status < 300,
+              status: response.status,
+              statusText: response.statusText,
+              text: () => Promise.resolve(response.responseText),
+              arrayBuffer: () => Promise.resolve(response.responseHeaders.
+                parseResponseHeaders(response.responseText)),
+              headers: new Headers(response.responseHeaders)
+            });
+          },
+          onerror: () => {
+            reject(new Error('GM_xmlhttpRequest 请求失败'));
+          },
+          ontimeout: () => {
+            reject(new Error('GM_xmlhttpRequest 请求超时'));
+          }
+        });
+      } else {
+        // 降级到普通 fetch（如果没有 GM_xmlhttpRequest）
+        fetch(url).then(resolve).catch(reject);
+      }
+    });
+  }
 
   // 智能规则分析器
   const RuleAnalyzer = {
@@ -2807,13 +2842,8 @@
           showToast(`正在加载第 ${pageCount} 页...`, 'info');
 
           try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), CONFIG.paginationTimeout);
-
-            const response = await fetch(currentPageUrl, {
-              signal: controller.signal
-            });
-            clearTimeout(timeoutId);
+            // 使用 GM_xmlhttpRequest 绕过 CORS 限制
+            const response = await gmFetch(currentPageUrl);
 
             if (!response.ok) {
               console.warn(`⚠️ [第 ${pageCount} 页] 加载失败: ${response.status}`);
@@ -3200,9 +3230,9 @@
         const url = link.href;
         const title = link.textContent.trim();
         
-        // 简单获取内容（不使用iframe，直接fetch）
+        // 简单获取内容（使用 GM_xmlhttpRequest 绕过 CORS）
         try {
-          const response = await fetch(url);
+          const response = await gmFetch(url);
           const html = await response.text();
           const parser = new DOMParser();
           const doc = parser.parseFromString(html, 'text/html');
@@ -4046,10 +4076,9 @@
     let title = '';
 
     async function fetchPage(pageUrl) {
-      const response = await fetch(pageUrl, { 
-        method: "GET",
-        signal: abortController ? abortController.signal : null
-      });
+      // 使用 GM_xmlhttpRequest 绕过 CORS 限制
+      const response = await gmFetch(pageUrl);
+
       if (!response.ok) {
         const errorMsg = response.status === 404 ? '章节不存在(404)' :
                          response.status === 403 ? '访问被拒绝(403)' :
@@ -4060,18 +4089,12 @@
       }
 
       let text = '';
-      const contentType = response.headers.get('Content-Type');
-      if (contentType) {
-        let charset = 'utf-8'; // 默认编码
-        const charsetMatch = contentType && contentType.match(/charset=([^;]+)/i);
-        if (charsetMatch) {
-          charset = charsetMatch[1].toLowerCase();
-        }
-        const arrayBuffer = await response.arrayBuffer();
-        const decoder = new TextDecoder(charset);
-        text = decoder.decode(new Uint8Array(arrayBuffer));
-      } else {
-        text = await response.text();
+      // GM_xmlhttpRequest 直接返回 text，不需要处理 encoding
+      text = await response.text();
+
+      // 检测是否被重定向到登录页面
+      if (text.includes('login.php') || text.includes('登录') || text.includes('请先登录')) {
+        throw new Error('需要登录才能查看此章节');
       }
 
       const parser = new DOMParser();
@@ -4099,7 +4122,7 @@
         contentDiv.innerHTML = contentDiv.innerHTML.replaceAll('<br>', '\n');
         const extractedContent = contentDiv.innerText.trim();
         const cleanedContent = cleanContent(extractedContent); // 使用内容清洗
-        
+
         // 内容校验：如果内容太少，可能是异步加载未完成
         if (cleanedContent.length < CONFIG.minContentLength) {
           console.warn(`[异步加载检测] ${pageUrl} 内容过短，尝试使用 iframe 等待加载`);
