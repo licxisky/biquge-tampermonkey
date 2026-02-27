@@ -1,0 +1,3359 @@
+// ==UserScript==
+// @name         笔趣阁下载器
+// @namespace    http://tampermonkey.net/
+// @version      0.9.2
+// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc）
+// @author       Licxisky
+// @match        https://www.beqege.cc/*/
+// @match        https://www.bbiquge.la/*/
+// @match        https://www.beqege.com/*/
+// @match        https://www.bqg862.xyz/*
+// @match        https://www.bqg283.cc/*
+// @match        https://www.biquge.net/*/*
+// @match        *://*/*/book/*
+// @match        *://*/*/novel/*
+// @match        *://*/*/read/*
+// @match        *://*/*/bookinfo/*
+// @match        *://*/*.html
+// @exclude      *://baidu.com/*
+// @exclude      *://*.baidu.com/*
+// @license      GPL-3.0
+// @grant        GM_registerMenuCommand
+// @grant        GM_addStyle
+// @namespace    https://greasyfork.org/scripts/500170
+// @supportURL   https://greasyfork.org/scripts/500170
+// @homepageURL  https://greasyfork.org/scripts/500170
+// @icon         https://www.beqege.cc/favicon.ico
+// ==/UserScript==
+
+(function() {
+
+  // 配置管理
+  const CONFIG = {
+    concurrency: parseInt(localStorage.getItem('bqg_concurrency') || '8'),
+    maxRetries: parseInt(localStorage.getItem('bqg_maxRetries') || '3'),
+    timeout: parseInt(localStorage.getItem('bqg_timeout') || '10'),
+    minContentLength: parseInt(localStorage.getItem('bqg_minContentLength') || '50'),
+    throttleMin: parseInt(localStorage.getItem('bqg_throttleMin') || '3'),
+    throttleMax: parseInt(localStorage.getItem('bqg_throttleMax') || '15'),
+    // 新增功能配置
+    enablePreview: localStorage.getItem('bqg_enablePreview') !== 'false',
+    previewCount: parseInt(localStorage.getItem('bqg_previewCount') || '3'),
+    enableDetection: localStorage.getItem('bqg_enableDetection') !== 'false',
+    enableSpeedChart: localStorage.getItem('bqg_enableSpeedChart') !== 'false',
+    duplicateThreshold: parseFloat(localStorage.getItem('bq_duplicateThreshold') || '0.85'),
+    adThreshold: parseInt(localStorage.getItem('bqg_adThreshold') || '20'),
+    disableResume: localStorage.getItem('bqg_disableResume') === 'true'
+  };
+
+  // 显示当前配置状态
+  console.log('⚙️ [配置加载]');
+  console.log(`   并发数: ${CONFIG.concurrency}`);
+  console.log(`   断点续传: ${CONFIG.disableResume ? '禁用' : '启用'}`);
+  console.log(`   智能限流: ${CONFIG.throttleMin} ~ ${CONFIG.throttleMax}`);
+  console.log(`   内容检测: ${CONFIG.enableDetection ? '启用' : '禁用'}`);
+
+  // 显示现有缓存
+  const existingCaches = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('bqg_')) {
+      existingCaches.push(key);
+    }
+  }
+  if (existingCaches.length > 0) {
+    console.log('💾 [现有缓存]');
+    existingCaches.forEach(key => {
+      console.log(`   • ${key}`);
+    });
+    console.log(`   共 ${existingCaches.length} 项缓存数据`);
+    console.log('   提示: 如需清除缓存，请在设置中点击相应按钮');
+  } else {
+    console.log('💾 [现有缓存] 无');
+  }
+
+  // 常量定义（消除魔法数字）
+  const CONSTANTS = {
+    IFRAME_CHECK_INTERVAL: 200,        // iframe内容检测间隔（毫秒）
+    RETRY_BASE_DELAY: 1000,            // 重试基础延迟（毫秒）
+    PROGRESS_SAVE_THROTTLE: 1000,      // 进度保存节流间隔（毫秒）
+    PROGRESS_SAMPLE_SIZE: 10,          // 智能限流样本数量
+    PROGRESS_SAMPLE_MAX: 20,           // 最大保留样本数
+    CONCURRENCY_MIN: 3,                // 最小并发数
+    CONCURRENCY_MAX: 15,               // 最大并发数
+    SLOW_RESPONSE_THRESHOLD: 3000,     // 慢响应阈值（毫秒）
+    FAST_RESPONSE_THRESHOLD: 1000,     // 快响应阈值（毫秒）
+    CHART_WIDTH: 460,                  // 图表宽度
+    CHART_HEIGHT: 80,                  // 图表高度
+    CHART_SAMPLE_SIZE: 100             // 图表样本点数
+  };
+
+  // 站点选择器策略配置（数据驱动）
+  const SITE_SELECTORS = [
+    {
+      name: 'beqege/bigee/bqgui',
+      toc: '#list',
+      chapters: 'dl dd > a[href]',
+      chaptersAlt: 'dl center.clear ~ dd > a[href]',
+      content: ['div#content', '#chaptercontent', '.content'],
+      title: '#maininfo #info h1',
+      bookInfo: '#maininfo #info'
+    },
+    {
+      name: 'listmain',
+      toc: '.listmain',
+      chapters: 'dl dd > a[href]',
+      content: ['#chaptercontent', 'div#content', '.content'],
+      title: '.info h1',
+      bookInfo: 'div.book div.info'
+    },
+    {
+      name: 'list-chapter',
+      toc: '.list-chapter',
+      chapters: 'div.booklist > ul > li > a[href]',
+      content: ['.content', 'div#content', '#chaptercontent'],
+      title: 'h1',
+      bookInfo: 'h1'
+    },
+    {
+      name: 'biquge.net',
+      toc: 'div.section-box',
+      chapters: 'div.section-box ul.section-list li > a[href]',
+      content: ['div.reader-main', 'div#content', '#chaptercontent', '.content', '#htmlContent'],
+      title: 'h1',
+      bookInfo: '#info, .book-info, .small'
+    }
+  ];
+
+  // 智能规则分析器
+  const RuleAnalyzer = {
+    analyzedRule: null, // 保存分析结果
+    currentType: '', // 'toc' 或 'content'
+    
+    // 检测内容中的清洗pattern（智能识别域名等垃圾内容）
+    detectCleanPatterns(contentEl) {
+      if (!contentEl) return [];
+      
+      const content = contentEl.innerText;
+      const detectedPatterns = [];
+      
+      // 常见顶级域名后缀
+      const TLDS = ['com','net','org','cn','cc','io','la','xyz','tv','me','info','biz','top','vip','pro','tw','hk','uk','us','jp','co'];
+      const tldPattern = TLDS.join('|');
+      
+      // 检测模式1: TLD锚定域名（核心改进 - 任意分隔符均可识别）
+      // 匹配: bquge.com / bq93 ⊙cc / bqjd⊕cc / xquge· cc 等所有变体
+      const domainRegex = new RegExp(`[a-z0-9]{2,}[^a-z\\u4e00-\\u9fa5\\r\\n]+(?:${tldPattern})\\b`, 'gi');
+      const matches = content.match(domainRegex);
+      
+      if (matches && matches.length >= 2) {
+        // 统计出现频率（去除空格再比较）
+        const freqMap = {};
+        matches.forEach(m => {
+          const normalized = m.toLowerCase().replace(/\s+/g, '');
+          freqMap[normalized] = (freqMap[normalized] || 0) + 1;
+        });
+        
+        const repeatedPatterns = Object.entries(freqMap).filter(([k, v]) => v >= 2);
+        
+        if (repeatedPatterns.length > 0 || matches.length >= 3) {
+          // 提取分隔符集合（用于展示，实际正则使用宽松模式）
+          const separators = new Set();
+          matches.forEach(m => {
+            const sep = m.match(/[^a-z0-9]+/gi);
+            if (sep) sep[0].split('').forEach(c => separators.add(c));
+          });
+          
+          detectedPatterns.push({
+            type: 'domain_like',
+            pattern: `[a-z0-9]{2,}[^a-z\\\\u4e00-\\\\u9fa5\\\\r\\\\n]+(?:${tldPattern})\\b`,
+            description: `检测到疑似域名（分隔符: "${Array.from(separators).map(s => s === ' ' ? '空格' : s).join('')}"，出现${matches.length}次）`,
+            confidence: matches.length >= 5 ? 'high' : 'medium',
+            sample: matches.slice(0, 3).join(', ')
+          });
+        }
+      }
+      
+      // 检测模式2: 重复的英文短字符串（如 "biquge biquge biquge"）
+      const repeatedEnglishPattern = /\b([a-z]{3,10})\s+\1\s+\1\b/gi;
+      const repeatedEnglish = content.match(repeatedEnglishPattern);
+      if (repeatedEnglish && repeatedEnglish.length > 0) {
+        detectedPatterns.push({
+          type: 'repeated_words',
+          pattern: '\\b([a-z]{3,10})\\s+\\1\\s+\\1\\b',
+          description: `检测到重复的英文短语（${repeatedEnglish.length}处）`,
+          confidence: 'high',
+          sample: repeatedEnglish.slice(0, 2).join(', ')
+        });
+      }
+      
+      // 检测模式3: 重复的中文短语（如 "笔趣阁 笔趣阁 笔趣阁"）
+      const repeatedChinesePattern = /([\u4e00-\u9fa5]{2,4})\s*\1\s*\1/g;
+      const repeatedChinese = content.match(repeatedChinesePattern);
+      if (repeatedChinese && repeatedChinese.length > 0) {
+        detectedPatterns.push({
+          type: 'repeated_chinese',
+          pattern: '([\\u4e00-\\u9fa5]{2,4})\\s*\\1\\s*\\1',
+          description: `检测到重复的中文短语（${repeatedChinese.length}处）`,
+          confidence: 'high',
+          sample: repeatedChinese.slice(0, 2).join(', ')
+        });
+      }
+      
+      // 检测模式4: URL格式
+      const urlPattern = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+      const urls = content.match(urlPattern);
+      if (urls && urls.length > 0) {
+        detectedPatterns.push({
+          type: 'url',
+          pattern: '(https?:\\/\\/[^\\s]+|www\\.[^\\s]+)',
+          description: `检测到${urls.length}个URL`,
+          confidence: 'high',
+          sample: urls.slice(0, 2).join(', ')
+        });
+      }
+      
+      // 检测模式5: 站点推广文案
+      const promoPatterns = [
+        /本站推荐/g,
+        /请记住本站域名/g,
+        /最快更新/g,
+        /一秒记住/g
+      ];
+      
+      const promoMatches = promoPatterns.some(p => p.test(content));
+      if (promoMatches) {
+        detectedPatterns.push({
+          type: 'promotion',
+          pattern: '(本站推荐|请记住本站域名|最快更新|一秒记住).*?[。！]',
+          description: '检测到站点推广文案',
+          confidence: 'high',
+          sample: '本站推荐、请记住本站域名等'
+        });
+      }
+      
+      // 检测模式6: 高密度的非正常内容（短字符串重复出现超过5次）
+      const words = content.toLowerCase().match(/\b[a-z]{4,8}\b/g);
+      if (words && words.length > 10) {
+        const wordFreq = {};
+        words.forEach(w => wordFreq[w] = (wordFreq[w] || 0) + 1);
+        const highFreqWords = Object.entries(wordFreq).filter(([k, v]) => v >= 5);
+        
+        if (highFreqWords.length > 0) {
+          const suspiciousWords = highFreqWords.filter(([word, count]) => 
+            // 排除常见词
+            !['that', 'this', 'with', 'from', 'have', 'been', 'said', 'will', 'what'].includes(word)
+          );
+          
+          if (suspiciousWords.length > 0) {
+            detectedPatterns.push({
+              type: 'high_frequency',
+              pattern: suspiciousWords.map(([w, c]) => `\\b${w}\\b`).join('|'),
+              description: `检测到高频重复词汇（${suspiciousWords.map(([w, c]) => `"${w}"×${c}`).join(', ')}）`,
+              confidence: 'medium',
+              sample: suspiciousWords.slice(0, 2).map(([w, c]) => `${w} (${c}次)`).join(', ')
+            });
+          }
+        }
+      }
+      
+      return detectedPatterns;
+    },
+    
+    // 分析章节目录页规则
+    analyzeTocPage() {
+      const result = {
+        type: 'toc',
+        domain: window.location.hostname,
+        url: window.location.href,
+        name: '',
+        toc: '',
+        chapters: '',
+        title: '',
+        bookInfo: '',
+        confidence: {}
+      };
+      
+      // 1. 提取站点名称
+      result.name = document.title.split('-')[document.title.split('-').length - 1].trim() || window.location.hostname;
+      
+      // 2. 分析目录容器（寻找包含大量链接的容器）
+      const containers = ['#list', '.listmain', '.list-chapter', '#chapterlist', '.book-list', '.chapter-list', 'dl'];
+      for (const selector of containers) {
+        const el = document.querySelector(selector);
+        if (el && el.querySelectorAll('a[href]').length > 10) {
+          result.toc = selector;
+          result.confidence.toc = 'high';
+          break;
+        }
+      }
+      
+      // 如果没找到，尝试通用方法：找链接最多的容器
+      if (!result.toc) {
+        const allContainers = document.querySelectorAll('div, dl, section, article');
+        let maxLinks = 0;
+        let bestContainer = null;
+        allContainers.forEach(container => {
+          const links = container.querySelectorAll('a[href]');
+          if (links.length > maxLinks && links.length > 10) {
+            maxLinks = links.length;
+            bestContainer = container;
+          }
+        });
+        if (bestContainer) {
+          // 尝试生成选择器
+          if (bestContainer.id) result.toc = `#${bestContainer.id}`;
+          else if (bestContainer.className) result.toc = `.${bestContainer.className.split(' ')[0]}`;
+          else result.toc = bestContainer.tagName.toLowerCase();
+          result.confidence.toc = 'medium';
+        }
+      }
+      
+      // 3. 分析章节链接选择器
+      if (result.toc) {
+        const tocEl = document.querySelector(result.toc);
+        const links = tocEl.querySelectorAll('a[href]');
+        if (links.length > 0) {
+          const firstLink = links[0];
+          const parentTag = firstLink.parentElement.tagName.toLowerCase();
+          if (parentTag === 'dd') result.chapters = 'dl dd > a[href]';
+          else if (parentTag === 'li') result.chapters = 'ul > li > a[href], ol > li > a[href]';
+          else result.chapters = 'a[href]';
+          result.confidence.chapters = 'high';
+        }
+      }
+      
+      // 4. 分析标题选择器
+      const titleSelectors = ['h1', '.title', '#title', 'h2', '.bookname'];
+      for (const selector of titleSelectors) {
+        const el = document.querySelector(selector);
+        if (el && el.innerText.trim().length > 0) {
+          result.title = selector;
+          result.confidence.title = 'high';
+          break;
+        }
+      }
+      
+      // 5. 分析书籍信息容器
+      const infoSelectors = ['#maininfo #info', '.book-info', '.info', '#info'];
+      for (const selector of infoSelectors) {
+        const el = document.querySelector(selector);
+        if (el) {
+          result.bookInfo = selector;
+          result.confidence.bookInfo = 'medium';
+          break;
+        }
+      }
+      
+      this.analyzedRule = result;
+      this.currentType = 'toc';
+      return result;
+    },
+    
+    // 分析内容页规则
+    analyzeContentPage() {
+      const result = {
+        type: 'content',
+        domain: window.location.hostname,
+        url: window.location.href,
+        name: document.title.split('-')[document.title.split('-').length - 1].trim() || window.location.hostname,
+        content: [],
+        nextPage: '',
+        confidence: {}
+      };
+      
+      // 1. 分析内容选择器（常见模式）
+      const contentSelectors = [
+        'div#content',
+        '#chaptercontent', 
+        '.content',
+        '#BookText',
+        '.chapter-content',
+        'article',
+        '.text-content',
+        '.book-content'
+      ];
+      
+      contentSelectors.forEach(selector => {
+        const el = document.querySelector(selector);
+        if (el && el.innerText.length > 100) {
+          result.content.push(selector);
+        }
+      });
+      
+      if (result.content.length === 0) {
+        // 降级：找文本最多的div
+        const divs = document.querySelectorAll('div');
+        let maxText = 0;
+        let bestDiv = null;
+        divs.forEach(div => {
+          const text = div.innerText.length;
+          if (text > maxText && text > 500) {
+            maxText = text;
+            bestDiv = div;
+          }
+        });
+        if (bestDiv) {
+          if (bestDiv.id) result.content.push(`#${bestDiv.id}`);
+          else if (bestDiv.className) result.content.push(`.${bestDiv.className.split(' ')[0]}`);
+          result.confidence.content = 'low';
+        }
+      } else {
+        result.confidence.content = 'high';
+      }
+      
+      // 2. 分析"下一页"链接
+      const nextPageSelectors = [
+        '.read-page a[rel="next"]',
+        'a[rel="next"]',
+        '.page a:contains("下一页")',
+        '.bottem a:contains("下一页")',
+        'a.next',
+        '.nextPage',
+        'a[href*="next"]'
+      ];
+      
+      for (const selector of nextPageSelectors) {
+        try {
+          const el = document.querySelector(selector);
+          if (el) {
+            result.nextPage = selector;
+            result.confidence.nextPage = 'high';
+            break;
+          }
+        } catch (e) {
+          // 跳过不支持的选择器（如:contains）
+        }
+      }
+      
+      // 通用方法：查找包含"下一页"文本的链接
+      if (!result.nextPage) {
+        const allLinks = document.querySelectorAll('a');
+        for (const link of allLinks) {
+          if (link.innerText.includes('下一页') || link.innerText === '下页' || link.innerText.toLowerCase() === 'next') {
+            // 尝试生成选择器
+            if (link.className) {
+              result.nextPage = `a.${link.className.split(' ')[0]}`;
+            } else {
+              result.nextPage = 'a'; // 降级方案
+            }
+            result.confidence.nextPage = 'medium';
+            break;
+          }
+        }
+      }
+      
+      // 3. 智能检测内容清洗规则
+      const contentEl = result.content.length > 0 ? document.querySelector(result.content[0]) : null;
+      result.cleanPatterns = this.detectCleanPatterns(contentEl);
+      result.confidence.cleanPatterns = result.cleanPatterns.length > 0 ? 'high' : 'low';
+      
+      this.analyzedRule = result;
+      this.currentType = 'content';
+      return result;
+    },
+    
+    // 生成HTML报告（根据类型）
+    generateReport(rule) {
+      const confidenceColor = (conf) => {
+        if (conf === 'high') return '#4caf50';
+        if (conf === 'medium') return '#ff9800';
+        return '#f44336';
+      };
+      
+      const confidenceText = (conf) => {
+        if (conf === 'high') return '高';
+        if (conf === 'medium') return '中';
+        return '低';
+      };
+      
+      if (rule.type === 'toc') {
+        // 章节目录规则报告
+        return `
+          <div style="margin-bottom:20px; padding:12px; background:#e3f2fd; border-radius:8px;">
+            <div style="font-weight:600; color:#1976d2; margin-bottom:8px;">📊 章节目录规则分析</div>
+            <div style="font-size:12px; color:#666;">域名: ${rule.domain}</div>
+          </div>
+          
+          <div style="margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-weight:600; color:#333;">站点名称</span>
+              <span style="padding:2px 8px; background:#4caf50; color:white; border-radius:12px; font-size:11px;">必需</span>
+            </div>
+            <input id="analyzedName" type="text" value="${rule.name}" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:13px;">
+          </div>
+          
+          <div style="margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-weight:600; color:#333;">目录容器</span>
+              <span style="padding:2px 8px; background:${confidenceColor(rule.confidence.toc)}; color:white; border-radius:12px; font-size:11px;">可信度: ${confidenceText(rule.confidence.toc)}</span>
+            </div>
+            <input id="analyzedToc" type="text" value="${rule.toc}" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:13px; font-family:monospace;">
+          </div>
+          
+          <div style="margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-weight:600; color:#333;">章节链接</span>
+              <span style="padding:2px 8px; background:${confidenceColor(rule.confidence.chapters)}; color:white; border-radius:12px; font-size:11px;">可信度: ${confidenceText(rule.confidence.chapters)}</span>
+            </div>
+            <input id="analyzedChapters" type="text" value="${rule.chapters}" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:13px; font-family:monospace;">
+          </div>
+          
+          <div style="margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-weight:600; color:#333;">标题选择器</span>
+              <span style="padding:2px 8px; background:${confidenceColor(rule.confidence.title)}; color:white; border-radius:12px; font-size:11px;">可信度: ${confidenceText(rule.confidence.title)}</span>
+            </div>
+            <input id="analyzedTitle" type="text" value="${rule.title}" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:13px; font-family:monospace;">
+          </div>
+          
+          <div style="margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-weight:600; color:#333;">书籍信息</span>
+              <span style="padding:2px 8px; background:#9e9e9e; color:white; border-radius:12px; font-size:11px;">可选</span>
+            </div>
+            <input id="analyzedBookInfo" type="text" value="${rule.bookInfo}" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:13px; font-family:monospace;">
+          </div>
+          
+          <div style="padding:12px; background:#fff3cd; border-radius:8px; font-size:12px; color:#856404;">
+            <strong>💡 提示：</strong>此规则用于目录页面，提取章节列表。请确认选择器准确后应用。
+          </div>
+        `;
+      } else {
+        // 内容页规则报告
+        return `
+          <div style="margin-bottom:20px; padding:12px; background:#f3e5f5; border-radius:8px;">
+            <div style="font-weight:600; color:#7b1fa2; margin-bottom:8px;">🔧 内容页规则分析</div>
+            <div style="font-size:12px; color:#666;">域名: ${rule.domain}</div>
+          </div>
+          
+          <div style="margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-weight:600; color:#333;">站点名称</span>
+              <span style="padding:2px 8px; background:#4caf50; color:white; border-radius:12px; font-size:11px;">必需</span>
+            </div>
+            <input id="analyzedName" type="text" value="${rule.name}" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:13px;">
+          </div>
+          
+          <div style="margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-weight:600; color:#333;">内容选择器（多个用逗号分隔）</span>
+              <span style="padding:2px 8px; background:${confidenceColor(rule.confidence.content)}; color:white; border-radius:12px; font-size:11px;">可信度: ${confidenceText(rule.confidence.content)}</span>
+            </div>
+            <input id="analyzedContent" type="text" value="${rule.content.join(', ')}" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:13px; font-family:monospace;">
+          </div>
+          
+          <div style="margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-weight:600; color:#333;">下一页选择器</span>
+              <span style="padding:2px 8px; background:${confidenceColor(rule.confidence.nextPage || 'low')}; color:white; border-radius:12px; font-size:11px;">可信度: ${confidenceText(rule.confidence.nextPage || 'low')}</span>
+            </div>
+            <input id="analyzedNextPage" type="text" value="${rule.nextPage}" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:13px; font-family:monospace;">
+            <div style="font-size:11px; color:#999; margin-top:4px;">用于支持分页章节的自动翻页</div>
+          </div>
+          
+          <div style="margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-weight:600; color:#333;">内容清洗规则（正则表达式，多个用 | 分隔）</span>
+              <span style="padding:2px 8px; background:${confidenceColor(rule.confidence.cleanPatterns || 'low')}; color:white; border-radius:12px; font-size:11px;">检测: ${rule.cleanPatterns?.length || 0}个</span>
+            </div>
+            <textarea id="analyzedCleanPatterns" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:12px; font-family:monospace; min-height:80px;" placeholder="暂未检测到需要清洗的内容">${rule.cleanPatterns?.map(p => p.pattern).join(' | ') || ''}</textarea>
+            ${rule.cleanPatterns && rule.cleanPatterns.length > 0 ? `
+            <div style="margin-top:8px; padding:8px; background:#e8f5e9; border-radius:6px; font-size:11px;">
+              <div style="font-weight:600; color:#2e7d32; margin-bottom:4px;">🔍 检测到的垃圾内容：</div>
+              ${rule.cleanPatterns.map(p => `
+                <div style="margin:4px 0; padding:4px; background:white; border-radius:4px;">
+                  <div style="color:#666;"><strong>${p.description}</strong> (可信度: ${confidenceText(p.confidence)})</div>
+                  <div style="color:#999; margin-top:2px;">示例: ${p.sample}</div>
+                </div>
+              `).join('')}
+            </div>` : ''}
+            <div style="font-size:11px; color:#999; margin-top:4px;">自动检测内容中的域名、URL、推广文案等垃圾内容，可手动编辑正则表达式</div>
+          </div>
+          
+          <div style="padding:12px; background:#fff3cd; border-radius:8px; font-size:12px; color:#856404;">
+            <strong>💡 提示：</strong>此规则用于内容页面，提取章节正文和处理翻页。内容清洗规则会自动过滤垃圾内容。
+          </div>
+        `;
+      }
+    },
+    
+    // 获取用户编辑后的规则
+    getEditedRule() {
+      if (this.currentType === 'toc') {
+        return {
+          name: document.getElementById('analyzedName').value,
+          toc: document.getElementById('analyzedToc').value,
+          chapters: document.getElementById('analyzedChapters').value,
+          content: document.getElementById('analyzedContent') ? 
+            document.getElementById('analyzedContent').value.split(',').map(s => s.trim()).filter(s => s) : 
+            ['div#content', '#chaptercontent', '.content'],
+          title: document.getElementById('analyzedTitle').value,
+          bookInfo: document.getElementById('analyzedBookInfo').value
+        };
+      } else {
+        // content type
+        const cleanPatternsText = document.getElementById('analyzedCleanPatterns') ? document.getElementById('analyzedCleanPatterns').value.trim() : '';
+        return {
+          name: document.getElementById('analyzedName').value,
+          content: document.getElementById('analyzedContent').value.split(',').map(s => s.trim()).filter(s => s),
+          nextPage: document.getElementById('analyzedNextPage') ? document.getElementById('analyzedNextPage').value : '',
+          cleanPatterns: cleanPatternsText ? cleanPatternsText.split('|').map(s => s.trim()).filter(s => s) : []
+        };
+      }
+    }
+  };
+
+  // 内容清洗规则管理系统
+  const CleanRuleManager = {
+    // 获取默认清洗规则
+    getDefaultRules() {
+      // 常见顶级域名后缀（用于 TLD 锚定匹配）
+      const TLDS = 'com|net|org|cn|cc|io|la|xyz|tv|me|info|biz|top|vip|pro|tw|hk|uk|us|jp|co';
+      return [
+        { id: 1, name: '站点推广文案', pattern: '(本站推荐|笔趣阁.*?最快更新|请记住本站域名|一秒记住.*?为您提供|最新网址|访问下载|『.*?』最新章节).*?[。！]', flags: 'g', enabled: true, builtin: true },
+        { id: 2, name: '特殊标记和括号', pattern: '(【.*?提供.*?】|\\(.*?请搜索.*?\\))', flags: 'g', enabled: true, builtin: true },
+        // 域名匹配策略：TLD锚定 + 宽松分隔符，覆盖任意符号（⊙⊕·○等）
+        { id: 3, name: '域名和网址（TLD锚定，覆盖任意分隔符）', pattern: `(https?:\\/\\/[^\\s]+|www\\.[^\\s]+\\.\\w{2,4}|[a-z0-9]{2,}[^a-z\\u4e00-\\u9fa5\\r\\n]+(?:${TLDS})\\b)\\s?`, flags: 'gi', enabled: true, builtin: true },
+        { id: 4, name: '分割线', pattern: '([-═]{3,}.*?[-═]{3,}|[-═]{3,})', flags: 'g', enabled: true, builtin: true },
+        { id: 10, name: '导航箭头符号', pattern: '[\\s\\n]*[←→][\\s\\n]*', flags: 'g', enabled: true, builtin: true },
+        { id: 8, name: '导航栏元素', pattern: '(上一章|下一章|下一页|目录|书签)(?=\\s|\\n|$)|热门推荐[：:].*?(?=\\n{2,}|$)|请记住本站.*?为您提供.*?(?=\\n|$)|本书源自.*?(?=\\n|$)', flags: 'gim', enabled: true, builtin: true },
+        { id: 11, name: '连续导航栏组合（无分隔符）', pattern: '(上一章[\\s\\n]*目录[\\s\\n]*下一章[\\s\\n]*下一页|上一章[\\s\\n]*目录[\\s\\n]*下一页|目录[\\s\\n]*下一页|上一章[\\s\\n]*目录|热门推荐[：:][^\\n]{0,200}?[\\s\\n]*(兵王无敌|修仙暴徒|重新开始|转动的异能世界|一点风骨|荣耀与王座|欺天大世|这个首富|鬼志通鉴|最强魔神系统|近身武王))', flags: 'gim', enabled: true, builtin: true },
+        { id: 9, name: '跨行导航栏组合', pattern: '(上一章[\\s\\n←]*[\\s\\n]*目录[\\s\\n→]*[\\s\\n]*下一章[\\s\\n]*书签[\\s\\n]*热门推荐)|(热门推荐[：:][^\\n]*(兵王无敌|修仙暴徒|重新开始|转动的异能世界|一点风骨|荣耀与王座|欺天大世|这个首富|鬼志通鉴|最强魔神系统|近身武王)[^\\n]*)', flags: 'gs', enabled: true, builtin: true },
+        // 重复域名：同样用TLD锚定，连续出现2次以上
+        { id: 5, name: '重复域名标识（TLD锚定）', pattern: `([a-z0-9]{2,}[^a-z\\u4e00-\\u9fa5\\r\\n]+(?:${TLDS})\\b\\s*){2,}`, flags: 'gi', enabled: true, builtin: true },
+        { id: 6, name: '重复英文短字符串', pattern: '\\b([a-z]{3,10})\\s+\\1\\s+\\1\\b', flags: 'gi', enabled: true, builtin: true },
+        { id: 7, name: '重复中文短语', pattern: '([\\u4e00-\\u9fa5]{2,4})\\s*\\1\\s*\\1', flags: 'g', enabled: true, builtin: true }
+      ];
+    },
+    
+    // 获取自定义规则
+    getCustomRules() {
+      const rules = localStorage.getItem('bqg_clean_rules');
+      return rules ? JSON.parse(rules) : [];
+    },
+    
+    // 保存自定义规则
+    saveCustomRules(rules) {
+      localStorage.setItem('bqg_clean_rules', JSON.stringify(rules));
+    },
+    
+    // 获取所有规则（默认+自定义）
+    getAllRules() {
+      const defaultRules = this.getDefaultRules();
+      const customRules = this.getCustomRules();
+      return [...defaultRules, ...customRules];
+    },
+    
+    // 获取启用的规则（转换为正则对象）
+    getEnabledPatterns() {
+      return this.getAllRules()
+        .filter(rule => rule.enabled)
+        .map(rule => {
+          try {
+            return new RegExp(rule.pattern, rule.flags);
+          } catch (e) {
+            console.error(`清洗规则"${rule.name}"格式错误:`, e);
+            return null;
+          }
+        })
+        .filter(r => r !== null);
+    },
+    
+    // 添加规则
+    addRule(rule) {
+      const rules = this.getCustomRules();
+      rules.push({ 
+        ...rule, 
+        id: Date.now(), 
+        enabled: true, 
+        builtin: false 
+      });
+      this.saveCustomRules(rules);
+      return true;
+    },
+    
+    // 更新规则
+    updateRule(id, updates) {
+      const numId = Number(id);
+      const rules = this.getCustomRules();
+      const index = rules.findIndex(r => Number(r.id) === numId);
+      if (index !== -1) {
+        rules[index] = { ...rules[index], ...updates };
+        this.saveCustomRules(rules);
+        return true;
+      }
+      return false;
+    },
+    
+    // 删除规则（已修复：Number转换避免字符串/数字类型不匹配）
+    deleteRule(id) {
+      const numId = Number(id);
+      const before = this.getCustomRules();
+      const after = before.filter(r => Number(r.id) !== numId);
+      if (after.length === before.length) return false;
+      this.saveCustomRules(after);
+      return true;
+    },
+    
+    // 切换规则启用状态
+    toggleRule(id, enabled) {
+      const numId = Number(id);
+      const customRules = this.getCustomRules();
+      const customIndex = customRules.findIndex(r => Number(r.id) === numId);
+      
+      if (customIndex !== -1) {
+        customRules[customIndex].enabled = enabled;
+        this.saveCustomRules(customRules);
+      } else {
+        // 内置规则的启用状态单独存储（统一用数字存储）
+        const numId = Number(id);
+        const disabledBuiltins = JSON.parse(localStorage.getItem('bqg_disabled_builtin_rules') || '[]').map(Number);
+        if (enabled) {
+          const newDisabled = disabledBuiltins.filter(ruleId => ruleId !== numId);
+          localStorage.setItem('bqg_disabled_builtin_rules', JSON.stringify(newDisabled));
+        } else {
+          if (!disabledBuiltins.includes(numId)) {
+            disabledBuiltins.push(numId);
+            localStorage.setItem('bqg_disabled_builtin_rules', JSON.stringify(disabledBuiltins));
+          }
+        }
+      }
+    },
+    
+    // 检查内置规则是否被禁用
+    isBuiltinRuleDisabled(id) {
+      const disabledBuiltins = JSON.parse(localStorage.getItem('bqg_disabled_builtin_rules') || '[]').map(Number);
+      return disabledBuiltins.includes(Number(id));
+    },
+    
+    // 获取所有规则（含禁用状态）
+    getAllRulesWithStatus() {
+      const defaultRules = this.getDefaultRules().map(rule => ({
+        ...rule,
+        enabled: !this.isBuiltinRuleDisabled(rule.id)
+      }));
+      const customRules = this.getCustomRules();
+      return [...defaultRules, ...customRules];
+    },
+    
+    // 导出规则
+    exportRules() {
+      const rules = this.getCustomRules();
+      const blob = new Blob([JSON.stringify(rules, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `bqg_clean_rules_${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    
+    // 导入规则
+    importRules(jsonStr) {
+      try {
+        const rules = JSON.parse(jsonStr);
+        if (!Array.isArray(rules)) throw new Error('规则格式错误');
+        
+        // 验证规则格式
+        for (const rule of rules) {
+          if (!rule.name || !rule.pattern || !rule.flags) {
+            throw new Error('规则缺少必需字段（name, pattern, flags）');
+          }
+          // 测试正则表达式是否有效
+          new RegExp(rule.pattern, rule.flags);
+        }
+        
+        // 合并到现有自定义规则
+        const existingRules = this.getCustomRules();
+        const mergedRules = [...existingRules, ...rules.map(r => ({
+          ...r,
+          id: Date.now() + Math.random(),
+          enabled: r.enabled !== false,
+          builtin: false
+        }))];
+        
+        this.saveCustomRules(mergedRules);
+        return true;
+      } catch (e) {
+        console.error('导入失败:', e);
+        alert(`导入失败: ${e.message}`);
+        return false;
+      }
+    },
+    
+    // 重置为默认规则（只清除自定义规则和禁用状态）
+    resetToDefault() {
+      localStorage.removeItem('bqg_clean_rules');
+      localStorage.removeItem('bqg_disabled_builtin_rules');
+    }
+  };
+
+  // 站点规则管理系统
+  const SiteRuleManager = {
+    // 获取自定义规则
+    getCustomRules() {
+      const rules = localStorage.getItem('bqg_custom_rules');
+      return rules ? JSON.parse(rules) : [];
+    },
+    
+    // 保存自定义规则
+    saveCustomRules(rules) {
+      localStorage.setItem('bqg_custom_rules', JSON.stringify(rules));
+    },
+    
+    // 获取所有规则（内置+自定义）
+    getAllRules() {
+      return [...SITE_SELECTORS, ...this.getCustomRules()];
+    },
+    
+    // 添加规则
+    addRule(rule) {
+      try {
+        const rules = this.getCustomRules();
+        rules.push({ ...rule, id: Date.now(), custom: true });
+        this.saveCustomRules(rules);
+        return true;
+      } catch (e) {
+        console.error('添加规则失败:', e);
+        return false;
+      }
+    },
+    
+    // 删除规则
+    deleteRule(id) {
+      const numId = Number(id);
+      const before = this.getCustomRules();
+      const after = before.filter(r => Number(r.id) !== numId);
+      if (after.length === before.length) return false;
+      this.saveCustomRules(after);
+      return true;
+    },
+    
+    // 导出规则
+    exportRules() {
+      const rules = this.getCustomRules();
+      const blob = new Blob([JSON.stringify(rules, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `bqg_rules_${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    
+    // 导入规则
+    importRules(jsonStr) {
+      try {
+        const rules = JSON.parse(jsonStr);
+        if (!Array.isArray(rules)) throw new Error('规则格式错误');
+        this.saveCustomRules(rules);
+        return true;
+      } catch (e) {
+        console.error('导入失败:', e);
+        return false;
+      }
+    }
+  };
+
+  // 内容检测系统
+  const ContentDetector = {
+    // Simhash算法：检测重复内容
+    simhash(text) {
+      const hash = new Array(64).fill(0);
+      const words = text.match(/[\u4e00-\u9fa5]+/g) || [];
+      
+      words.forEach(word => {
+        let wordHash = 0;
+        for (let i = 0; i < word.length; i++) {
+          wordHash = (wordHash * 31 + word.charCodeAt(i)) & 0xFFFFFFFF;
+        }
+        
+        for (let i = 0; i < 64; i++) {
+          const bit = (wordHash >> i) & 1;
+          hash[i] += bit ? 1 : -1;
+        }
+      });
+      
+      return hash.map(v => v > 0 ? 1 : 0).join('');
+    },
+    
+    // 计算汉明距离（相似度）
+    similarity(hash1, hash2) {
+      let distance = 0;
+      for (let i = 0; i < 64; i++) {
+        if (hash1[i] !== hash2[i]) distance++;
+      }
+      return 1 - distance / 64;
+    },
+    
+    // 检测重复内容
+    detectDuplicate(chapters) {
+      const hashes = chapters.map(ch => ({
+        index: ch.index,
+        title: ch.title,
+        hash: this.simhash(ch.content)
+      }));
+      
+      const duplicates = [];
+      for (let i = 0; i < hashes.length - 1; i++) {
+        for (let j = i + 1; j < hashes.length; j++) {
+          const sim = this.similarity(hashes[i].hash, hashes[j].hash);
+          if (sim >= CONFIG.duplicateThreshold) {
+            duplicates.push({
+              chapter1: hashes[i].title,
+              chapter2: hashes[j].title,
+              similarity: (sim * 100).toFixed(1) + '%'
+            });
+          }
+        }
+      }
+      return duplicates;
+    },
+    
+    // 检测广告内容
+    detectAds(content) {
+      const adKeywords = [
+        '推荐', '新书', '收藏', '投票', '月票', '打赏', '订阅',
+        '关注', '公众号', '微信', 'QQ群', '书友群', '作者', '求',
+        '跪求', '拜求', '官网', '最新章节', '最快更新', '首发'
+      ];
+      
+      let adCount = 0;
+      const words = content.match(/[\u4e00-\u9fa5]+/g) || [];
+      words.forEach(word => {
+        if (adKeywords.some(kw => word.includes(kw))) adCount++;
+      });
+      
+      const adRatio = words.length > 0 ? (adCount / words.length) * 100 : 0;
+      return {
+        isAd: adRatio > CONFIG.adThreshold,
+        ratio: adRatio.toFixed(1) + '%'
+      };
+    },
+    
+    // 检测异常内容
+    detectAbnormal(content) {
+      const issues = [];
+
+      // 检测内容过短
+      if (content.length < 100) {
+        issues.push('内容过短');
+      }
+
+      // 检测乱码（连续特殊字符）
+      if (/[^\u4e00-\u9fa5\w\s]{10,}/.test(content)) {
+        issues.push('疑似乱码');
+      }
+
+      // 检测404或错误提示
+      if (/404|not\s*found|出错|错误|章节不存在/i.test(content)) {
+        issues.push('章节不存在或出错');
+      }
+
+      // [已移除] 标题与内容匹配检测 - 章节标题不一定出现在正文中
+
+      return issues;
+    }
+  };
+
+  // 速度图表系统
+  const SpeedChart = {
+    canvas: null,
+    ctx: null,
+    speeds: [],
+    
+    init(canvasElement) {
+      this.canvas = canvasElement;
+      this.ctx = this.canvas.getContext('2d');
+
+      // 设置 CSS 显示尺寸
+      this.canvas.style.width = `${CONSTANTS.CHART_WIDTH}px`;
+      this.canvas.style.height = `${CONSTANTS.CHART_HEIGHT}px`;
+
+      // 根据 devicePixelRatio 设置内部分辨率，解决字体模糊问题
+      const dpr = window.devicePixelRatio || 1;
+      this.canvas.width = CONSTANTS.CHART_WIDTH * dpr;
+      this.canvas.height = CONSTANTS.CHART_HEIGHT * dpr;
+
+      // 缩放绘图上下文
+      this.ctx.scale(dpr, dpr);
+
+      this.speeds = [];
+    },
+    
+    addSpeed(speed) {
+      this.speeds.push(speed);
+      if (this.speeds.length > CONSTANTS.CHART_SAMPLE_SIZE) {
+        this.speeds.shift();
+      }
+      this.draw();
+    },
+    
+    draw() {
+      if (!this.ctx) return;
+      
+      const ctx = this.ctx;
+      const width = this.canvas.width;
+      const height = this.canvas.height;
+      
+      // 清空画布
+      ctx.clearRect(0, 0, width, height);
+      
+      // 背景渐变
+      const bgGradient = ctx.createLinearGradient(0, 0, 0, height);
+      bgGradient.addColorStop(0, 'rgba(102, 126, 234, 0.05)');
+      bgGradient.addColorStop(1, 'rgba(118, 75, 162, 0.05)');
+      ctx.fillStyle = bgGradient;
+      ctx.fillRect(0, 0, width, height);
+      
+      if (this.speeds.length < 2) return;
+      
+      // 计算最大值和平均值
+      const maxSpeed = Math.max(...this.speeds, 10); // 至少10
+      const avgSpeed = this.speeds.reduce((a, b) => a + b, 0) / this.speeds.length;
+      
+      // 绘制网格线
+      ctx.strokeStyle = 'rgba(102, 126, 234, 0.1)';
+      ctx.lineWidth = 1;
+      for (let i = 1; i <= 3; i++) {
+        const y = (height * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+      
+      // 绘制速度曲线
+      ctx.beginPath();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#667eea';
+      ctx.lineJoin = 'round';
+      
+      const step = width / (CONSTANTS.CHART_SAMPLE_SIZE - 1);
+      this.speeds.forEach((speed, index) => {
+        const x = index * step;
+        const y = height - (speed / maxSpeed) * height;
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+      
+      // 填充渐变区域
+      ctx.lineTo(width, height);
+      ctx.lineTo(0, height);
+      ctx.closePath();
+      const gradient = ctx.createLinearGradient(0, 0, 0, height);
+      gradient.addColorStop(0, 'rgba(102, 126, 234, 0.3)');
+      gradient.addColorStop(1, 'rgba(102, 126, 234, 0.05)');
+      ctx.fillStyle = gradient;
+      ctx.fill();
+      
+      // 绘制统计信息
+      ctx.font = '11px monospace';
+      ctx.fillStyle = '#667eea';
+      ctx.fillText(`当前: ${this.speeds[this.speeds.length - 1].toFixed(1)} 章/秒`, 10, 15);
+      ctx.fillText(`平均: ${avgSpeed.toFixed(1)} 章/秒`, 10, 30);
+      ctx.fillText(`峰值: ${maxSpeed.toFixed(1)} 章/秒`, 10, 45);
+    },
+    
+    reset() {
+      this.speeds = [];
+      if (this.ctx) {
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      }
+    }
+  };
+
+  // 内容清洗正则库（从 CleanRuleManager 动态加载）
+  let CONTENT_CLEAN_PATTERNS = CleanRuleManager.getEnabledPatterns();
+
+
+  GM_addStyle(`
+        /* 弹窗基础样式 - 现代化毛玻璃效果 */
+        #fetchContentModal, #configModal {
+            display: block;
+            border-radius: 16px;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 0;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3), 
+                        0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+            z-index: 10000;
+            width: 520px;
+            animation: modalFadeIn 0.3s ease-out;
+            backdrop-filter: blur(10px);
+        }
+        
+        @keyframes modalFadeIn {
+            from {
+                opacity: 0;
+                transform: translate(-50%, -48%);
+            }
+            to {
+                opacity: 1;
+                transform: translate(-50%, -50%);
+            }
+        }
+        
+        #configModal {
+            width: 460px;
+        }
+        
+        /* 内容区域（白色背景） */
+        #fetchContentModal > *, #configModal > * {
+            position: relative;
+        }
+        
+        #fetchContentModal::after, #configModal::after {
+            content: '';
+            position: absolute;
+            top: 60px;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: white;
+            border-radius: 0 0 16px 16px;
+            z-index: -1;
+        }
+        
+        /* 标题栏 */
+        #fetchContentModal h3, #configModal h3 {
+            margin: 0;
+            padding: 20px 24px;
+            font-size: 18px;
+            font-weight: 600;
+            color: white;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            position: relative;
+        }
+        
+        /* 关闭按钮 */
+        #fetcModalClose, #configModalClose {
+            cursor: pointer;
+            float: right;
+            margin: -2px 8px 0 0;
+            width: 28px;
+            height: 28px;
+            line-height: 28px;
+            text-align: center;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        #fetcModalClose:hover, #configModalClose:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: rotate(90deg);
+        }
+        
+        /* 设置按钮 */
+        #configBtn {
+            cursor: pointer;
+            float: right;
+            margin: -2px 8px 0 0;
+            width: 28px;
+            height: 28px;
+            line-height: 28px;
+            text-align: center;
+            font-size: 18px;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        #configBtn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: rotate(60deg);
+        }
+        
+        /* 表单内容区域 */
+        #fetchContentModal label, #configModal label {
+            display: block;
+            font-size: 14px;
+            color: #333;
+            padding: 0 24px;
+        }
+        
+        #fetchContentModal label[for="ranges"] {
+            margin-top: 20px;
+            margin-bottom: 12px;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        #_book_info {
+            margin-top: 20px;
+            padding: 12px 24px !important;
+            background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+            border-radius: 8px;
+            margin-left: 24px;
+            margin-right: 24px;
+            font-weight: 500;
+            color: #667eea;
+        }
+        
+        /* 输入框美化 */
+        input[type="number"] {
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            text-align: center;
+            -moz-appearance: textfield;
+            appearance: textfield;
+            background: white;
+        }
+        
+        input[type="number"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        input[type="number"]::-webkit-inner-spin-button, 
+        input[type="number"]::-webkit-outer-spin-button {
+            -webkit-appearance: inner-spin-button;
+            opacity: 1;
+        }
+        
+        #fetchContentModal input[type="number"] {
+            width: auto;
+            margin: 2px 3px;
+        }
+        
+        /* 表格样式 */
+        #fetchContentModal table {
+            margin: 0 24px 20px 24px;
+            width: calc(100% - 48px) !important;
+        }
+        
+        #fetchContentModal td {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 220px;
+            color: #666;
+            font-size: 13px;
+        }
+        
+        /* 按钮美化 */
+        button {
+            border: none;
+            padding: 12px 24px;
+            font-size: 15px;
+            font-weight: 600;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        button::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
+            transform: translate(-50%, -50%);
+            transition: width 0.6s, height 0.6s;
+        }
+        
+        button:hover::before {
+            width: 300px;
+            height: 300px;
+        }
+        
+        #fetchContentButton {
+            width: calc(100% - 48px);
+            margin: 10px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        #fetchContentButton:hover {
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+            transform: translateY(-2px);
+        }
+        
+        #fetchContentButton:active {
+            transform: translateY(0);
+        }
+        
+        /* 进度条美化 */
+        #fetchContentProgress {
+            width: calc(100% - 48px);
+            margin: 10px 24px;
+            background: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        #fetchContentProgress div {
+            width: 0;
+            height: 24px;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            text-align: center;
+            line-height: 24px;
+            color: white;
+            font-size: 12px;
+            font-weight: 600;
+            white-space: nowrap;
+            transition: width 0.3s ease;
+            box-shadow: 0 0 10px rgba(102, 126, 234, 0.5);
+        }
+        
+        #fetchContentProgress div.progress-warning {
+            background: linear-gradient(90deg, #ff9800 0%, #ff6f00 100%) !important;
+            box-shadow: 0 0 10px rgba(255, 152, 0, 0.5);
+        }
+        
+        #fetchContentProgress div.progress-error {
+            background: linear-gradient(90deg, #f44336 0%, #d32f2f 100%) !important;
+            box-shadow: 0 0 10px rgba(244, 67, 54, 0.5);
+        }
+        
+        /* 配置项样式 */
+        .config-item {
+            margin: 18px 0;
+            padding: 0 24px;
+            text-align: left;
+        }
+        
+        .config-item label {
+            display: inline-block;
+            width: 160px;
+            font-weight: 600;
+            color: #333;
+            padding: 0;
+        }
+        
+        .config-item input {
+            width: 80px;
+            padding: 8px 12px;
+        }
+        
+        .config-item small {
+            color: #999;
+            margin-left: 8px;
+            font-size: 12px;
+        }
+        
+        #saveConfigButton {
+            width: calc(100% - 48px);
+            margin: 24px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        #saveConfigButton:hover {
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+            transform: translateY(-2px);
+        }
+        
+        /* 失败章节信息样式 */
+        #failedChaptersInfo {
+            margin: 10px 24px;
+            padding: 16px;
+            background: linear-gradient(135deg, #fff3cd 0%, #ffe8a1 100%);
+            border: none;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(255, 193, 7, 0.2);
+            max-height: 160px;
+            overflow-y: auto;
+        }
+        
+        #failedChaptersInfo > div:first-child {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #856404;
+        }
+        
+        #failedChaptersList {
+            font-size: 12px;
+            color: #856404;
+        }
+        
+        #retryFailedButton {
+            width: 100%;
+            margin-top: 12px;
+            background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);
+            color: white;
+            border-radius: 8px;
+            padding: 10px;
+            box-shadow: 0 2px 8px rgba(255, 152, 0, 0.3);
+        }
+        
+        #retryFailedButton:hover {
+            box-shadow: 0 4px 12px rgba(255, 152, 0, 0.5);
+            transform: translateY(-1px);
+        }
+        
+        /* 警告信息 */
+        #_warn_info {
+            color: #666;
+            font-size: 13px;
+            margin: 8px 24px;
+            line-height: 1.6;
+        }
+        
+        /* 下载链接 */
+        #_downlink {
+            display: block;
+            margin: 12px 24px 24px 24px;
+            padding: 10px;
+            text-align: center;
+            color: #667eea;
+            text-decoration: none;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            font-size: 13px;
+        }
+        
+        #_downlink:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+        
+        /* 滚动条美化 */
+        #failedChaptersInfo::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        #failedChaptersInfo::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.05);
+            border-radius: 3px;
+        }
+        
+        #failedChaptersInfo::-webkit-scrollbar-thumb {
+            background: rgba(133, 100, 4, 0.3);
+            border-radius: 3px;
+        }
+        
+        #failedChaptersInfo::-webkit-scrollbar-thumb:hover {
+            background: rgba(133, 100, 4, 0.5);
+        }
+    `);
+
+  const modalHtml = `
+        <div id="fetchContentModal" style="display:none;">
+            <h3>小说下载工具<span id="fetcModalClose">✕</span><span id="configBtn" title="设置">⚙️</span></h3>
+            <label id="_book_info"></label>
+            <div style="margin:10px 24px; padding:12px; background:rgba(102,126,234,0.05); border-radius:8px;">
+                <label style="font-size:12px; color:#667eea; font-weight:600; display:block; margin-bottom:8px;">📚 文件名标题选择</label>
+                <select id="_title_select" style="width:100%; padding:8px; border-radius:6px; border:1px solid #e0e0e0; font-size:13px; margin-bottom:8px;">
+                    <option value="">自动检测（推荐）</option>
+                </select>
+                <input type="text" id="_title_custom" placeholder="或输入自定义标题" style="width:100%; padding:8px; border-radius:6px; border:1px solid #e0e0e0; font-size:13px; box-sizing:border-box;">
+            </div>
+            <label for="ranges">下载章节范围：</label>
+            <table style="width:100%; margin-bottom:10px; table-layout:fixed;">
+              <tbody>
+                 <colgroup>
+                  <col style="width: 45%;">
+                  <col style="width: 10%;">
+                  <col style="width: 45%;">
+                </colgroup>
+                <tr>
+                  <th style="width:45%; text-align:right;"><input type="number" id="_startRange" min="1" value="1"></th>
+                  <th style="width:10%; text-align:center;"> ~ </th>
+                  <th style="width:45%; text-align: left;"><input type="number" id="_finalRange" min="1" value="2"></th>
+                </tr>
+                <tr>
+                  <td style="width:45%; text-align:right;" id="_startRange_title"></td>
+                  <td style="width:10%; text-align:center;"> ~ </td>
+                  <td style="width:45%; text-align:left;" id="_finalRange_title"></td>
+                </tr>
+              </tbody>
+            </table>
+            <label id="_warn_info"></label>
+            <div style="display:flex; gap:10px; margin:10px 24px;">
+                <button id="previewButton" style="flex:1; background:linear-gradient(135deg, #4fc3f7 0%, #29b6f6 100%); color:white; padding:10px; border-radius:8px;">📖 预览章节</button>
+                <button id="ruleManageButton" style="flex:1; background:linear-gradient(135deg, #66bb6a 0%, #43a047 100%); color:white; padding:10px; border-radius:8px;">⚙️ 规则管理</button>
+            </div>
+            <div style="display:flex; gap:10px; margin:10px 24px;">
+                <button id="analyzeTocButton" style="flex:1; background:linear-gradient(135deg, #ff9800 0%, #ff6f00 100%); color:white; padding:10px; border-radius:8px;">🔍 分析章节规则</button>
+                <button id="analyzeContentButton" style="flex:1; background:linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%); color:white; padding:10px; border-radius:8px;">🔧 分析内容规则</button>
+            </div>
+            <button id="fetchContentButton">开始下载</button>
+            <div id="fetchContentProgress">
+                <div></div>
+            </div>
+            <div id="speedChartContainer" style="margin:10px 24px; padding:10px; background:rgba(102,126,234,0.05); border-radius:8px; display:none;">
+                <div style="font-size:11px; color:#667eea; margin-bottom:5px; font-weight:600;">下载速度统计</div>
+                <canvas id="speedChart"></canvas>
+            </div>
+            <div id="detectionResultsContainer" style="display:none; margin:10px 24px; padding:12px; background:rgba(255,152,0,0.1); border-radius:8px; max-height:120px; overflow-y:auto;">
+                <div style="font-size:12px; color:#ff6f00; font-weight:600; margin-bottom:8px;">⚠️ 内容质量检测</div>
+                <div id="detectionResults" style="font-size:11px; color:#666;"></div>
+            </div>
+            <div id="failedChaptersInfo" style="display:none; margin:10px 0; padding:10px; background:#fff3cd; border:1px solid #ffc107; border-radius:5px; text-align:left; max-height:150px; overflow-y:auto;">
+                <div style="font-weight:bold; margin-bottom:5px; color:#856404;">失败章节列表：</div>
+                <div id="failedChaptersList" style="font-size:12px; color:#856404;"></div>
+                <button id="retryFailedButton" style="width:100%; margin-top:8px; background:#ffc107; border:none; padding:5px; cursor:pointer; border-radius:3px;">重试失败章节</button>
+            </div>
+            <a id="_downlink"></a>
+        </div>
+        <div id="configModal" style="display:none;">
+            <h3>下载设置<span id="configModalClose" style="cursor: pointer; float: right; margin:-8px -4px;">✕</span></h3>
+            <div class="config-item">
+                <label>并发请求数：</label>
+                <input type="number" id="config_concurrency" min="1" max="20" value="8">
+                <small>(1-20)</small>
+            </div>
+            <div class="config-item">
+                <label>失败重试次数：</label>
+                <input type="number" id="config_retries" min="0" max="10" value="3">
+                <small>(0-10)</small>
+            </div>
+            <div class="config-item">
+                <label>iframe超时(秒)：</label>
+                <input type="number" id="config_timeout" min="5" max="60" value="10">
+                <small>(5-60)</small>
+            </div>
+            <div class="config-item">
+                <label>最小内容长度：</label>
+                <input type="number" id="config_minlength" min="10" max="200" value="50">
+                <small>(10-200字)</small>
+            </div>
+            <div class="config-item" style="border-top:1px solid #e0e0e0; padding-top:12px; margin-top:12px;">
+                <label style="color:#ff6f00;">智能限流下限：</label>
+                <input type="number" id="config_throttle_min" min="1" max="20" value="3">
+                <small>(1-20)</small>
+            </div>
+            <div class="config-item">
+                <label style="color:#ff6f00;">智能限流上限：</label>
+                <input type="number" id="config_throttle_max" min="1" max="30" value="15">
+                <small>(1-30)</small>
+            </div>
+            <div style="border-top:1px solid #e0e0e0; padding-top:12px; margin-top:12px;">
+                <button id="manageCleanRulesButton" style="background:linear-gradient(135deg, #ff9800 0%, #ff6f00 100%); color:white; padding:10px 20px; border-radius:8px; font-size:13px; width:calc(100% - 48px); margin:0 24px;">
+                    🧹 内容清洗规则管理
+                </button>
+            </div>
+            <div style="border-top:1px solid #e0e0e0; padding-top:12px; margin-top:12px;">
+                <label style="display:flex; align-items:center; justify-content:center; margin-bottom:10px;">
+                    <input type="checkbox" id="config_disable_resume" style="margin-right:8px;">
+                    <span>禁用断点续传（每次重新下载）</span>
+                </label>
+                <div style="padding:0 24px;">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:8px;">
+                        <button class="cache-clear-btn" data-type="progress" style="background:#ff9800; color:white; padding:8px; border-radius:6px; font-size:12px; cursor:pointer; border:none;">📥 下载进度</button>
+                        <button class="cache-clear-btn" data-type="config" style="background:#2196f3; color:white; padding:8px; border-radius:6px; font-size:12px; cursor:pointer; border:none;">⚙️ 配置设置</button>
+                        <button class="cache-clear-btn" data-type="rules" style="background:#4caf50; color:white; padding:8px; border-radius:6px; font-size:12px; cursor:pointer; border:none;">📋 清洗规则</button>
+                        <button class="cache-clear-btn" data-type="sites" style="background:#9c27b0; color:white; padding:8px; border-radius:6px; font-size:12px; cursor:pointer; border:none;">🌐 站点规则</button>
+                    </div>
+                    <button id="clearAllCacheButton" style="background:#e53935; color:white; padding:10px 20px; border-radius:8px; font-size:13px; width:100%; cursor:pointer; border:none;">
+                        🗑️ 清除所有缓存数据
+                    </button>
+                </div>
+            </div>
+            <button id="saveConfigButton">保存设置</button>
+        </div>
+        <div id="previewModal" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:16px; padding:0; box-shadow:0 20px 60px rgba(0,0,0,0.3); z-index:10001; width:600px; max-height:90vh; flex-direction:column; display:none;">
+            <h3 style="background:linear-gradient(135deg, #4fc3f7 0%, #29b6f6 100%); color:white; padding:20px 24px; margin:0; border-radius:16px 16px 0 0; flex-shrink:0;">章节预览<span id="previewModalClose" style="cursor:pointer; float:right; margin:-2px 0;">✕</span></h3>
+            <div id="previewContent" style="padding:20px 24px; overflow-y:auto; font-size:13px; color:#666; line-height:1.8; flex:1; min-height:0;"></div>
+            <div style="padding:0 24px 20px 24px; display:flex; gap:10px; flex-shrink:0;">
+                <button id="skipPreviewButton" style="flex:1; background:#e0e0e0; color:#666; padding:10px; border-radius:8px;">跳过预览</button>
+                <button id="continueDownloadButton" style="flex:1; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); color:white; padding:10px; border-radius:8px;">继续下载</button>
+            </div>
+        </div>
+        <div id="ruleAnalyzerModal" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:16px; padding:0; box-shadow:0 20px 60px rgba(0,0,0,0.3); z-index:10002; width:700px; max-height:90vh; flex-direction:column; display:none;">
+            <h3 id="analyzerModalTitle" style="background:linear-gradient(135deg, #ff9800 0%, #ff6f00 100%); color:white; padding:20px 24px; margin:0; border-radius:16px 16px 0 0; flex-shrink:0;">智能规则分析<span id="analyzerModalClose" style="cursor:pointer; float:right; margin:-2px 0;">✕</span></h3>
+            <div id="analyzerContent" style="padding:20px 24px; overflow-y:auto; font-size:13px; color:#666; line-height:1.8; flex:1; min-height:0;"></div>
+            <div style="padding:0 24px 20px 24px; display:flex; gap:10px; flex-shrink:0;">
+                <button id="applyRuleButton" style="flex:1; background:linear-gradient(135deg, #66bb6a 0%, #43a047 100%); color:white; padding:10px; border-radius:8px;">✓ 应用规则</button>
+                <button id="exportAnalyzedRuleButton" style="flex:1; background:linear-gradient(135deg, #4fc3f7 0%, #29b6f6 100%); color:white; padding:10px; border-radius:8px;">📤 导出规则</button>
+                <button id="closeAnalyzerButton" style="flex:1; background:#e0e0e0; color:#666; padding:10px; border-radius:8px;">关闭</button>
+            </div>
+        </div>
+        <div id="ruleModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:16px; padding:0; box-shadow:0 20px 60px rgba(0,0,0,0.3); z-index:10001; width:700px; max-height:600px;">
+            <h3 style="background:linear-gradient(135deg, #66bb6a 0%, #43a047 100%); color:white; padding:20px 24px; margin:0; border-radius:16px 16px 0 0;">站点规则管理<span id="ruleModalClose" style="cursor:pointer; float:right; margin:-2px 0;">✕</span></h3>
+            <div style="padding:20px 24px; max-height:450px; overflow-y:auto;">
+                <div style="margin-bottom:15px; text-align:right;">
+                    <button id="addRuleButton" style="background:#4fc3f7; color:white; padding:8px 16px; border-radius:6px; font-size:13px;">➕ 添加规则</button>
+                    <button id="importRulesButton" style="background:#66bb6a; color:white; padding:8px 16px; border-radius:6px; font-size:13px; margin-left:8px;">📥 导入</button>
+                    <button id="exportRulesButton" style="background:#ffa726; color:white; padding:8px 16px; border-radius:6px; font-size:13px; margin-left:8px;">📤 导出</button>
+                </div>
+                <div id="rulesList" style="font-size:13px;"></div>
+            </div>
+        </div>
+        <div id="cleanRuleModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:16px; padding:0; box-shadow:0 20px 60px rgba(0,0,0,0.3); z-index:10003; width:800px; max-height:650px;">
+            <h3 style="background:linear-gradient(135deg, #ff9800 0%, #ff6f00 100%); color:white; padding:20px 24px; margin:0; border-radius:16px 16px 0 0;">🧹 内容清洗规则管理<span id="cleanRuleModalClose" style="cursor:pointer; float:right; margin:-2px 0;">✕</span></h3>
+            <div style="padding:20px 24px; max-height:520px; overflow-y:auto;">
+                <div style="margin-bottom:15px; padding:12px; background:#fff3cd; border-radius:8px; font-size:12px; color:#856404;">
+                    <strong>💡 提示：</strong>清洗规则使用正则表达式匹配并删除内容中的垃圾文本。内置规则可禁用，自定义规则可编辑删除。
+                </div>
+                <div style="margin-bottom:15px; text-align:right;">
+                    <button id="addCleanRuleButton" style="background:#4fc3f7; color:white; padding:8px 16px; border-radius:6px; font-size:13px;">➕ 添加规则</button>
+                    <button id="importCleanRulesButton" style="background:#66bb6a; color:white; padding:8px 16px; border-radius:6px; font-size:13px; margin-left:8px;">📥 导入</button>
+                    <button id="exportCleanRulesButton" style="background:#ffa726; color:white; padding:8px 16px; border-radius:6px; font-size:13px; margin-left:8px;">📤 导出</button>
+                    <button id="resetCleanRulesButton" style="background:#e53935; color:white; padding:8px 16px; border-radius:6px; font-size:13px; margin-left:8px;">🔄 重置</button>
+                </div>
+                <div id="cleanRulesList" style="font-size:13px;"></div>
+            </div>
+        </div>
+    `;
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+  // 获取元素
+  const modal = document.getElementById('fetchContentModal');
+  const configModal = document.getElementById('configModal');
+  const startRangeInput = document.getElementById('_startRange');
+  const finalRangeInput = document.getElementById('_finalRange');
+
+  const startTitle = document.getElementById('_startRange_title');
+  const finalTitle = document.getElementById('_finalRange_title');
+
+  const fetchButton = document.getElementById('fetchContentButton');
+  const progressBar = document.getElementById('fetchContentProgress').firstElementChild;
+  const downlink = document.getElementById('_downlink');
+  const warnInfo = document.getElementById('_warn_info');
+  const bookInfo = document.getElementById('_book_info');
+  const titleSelect = document.getElementById('_title_select');
+  const titleCustom = document.getElementById('_title_custom');
+  const fetcClose = document.getElementById('fetcModalClose');
+  const configBtn = document.getElementById('configBtn');
+  const configModalClose = document.getElementById('configModalClose');
+  const saveConfigButton = document.getElementById('saveConfigButton');
+  const failedChaptersInfo = document.getElementById('failedChaptersInfo');
+  const failedChaptersList = document.getElementById('failedChaptersList');
+  const retryFailedButton = document.getElementById('retryFailedButton');
+  
+  // 新增元素获取
+  const previewButton = document.getElementById('previewButton');
+  const ruleManageButton = document.getElementById('ruleManageButton');
+  const previewModal = document.getElementById('previewModal');
+  const previewModalClose = document.getElementById('previewModalClose');
+  const previewContent = document.getElementById('previewContent');
+  const skipPreviewButton = document.getElementById('skipPreviewButton');
+  const continueDownloadButton = document.getElementById('continueDownloadButton');
+  const ruleModal = document.getElementById('ruleModal');
+  const ruleModalClose = document.getElementById('ruleModalClose');
+  const rulesList = document.getElementById('rulesList');
+  const addRuleButton = document.getElementById('addRuleButton');
+  const importRulesButton = document.getElementById('importRulesButton');
+  const exportRulesButton = document.getElementById('exportRulesButton');
+  const speedChartContainer = document.getElementById('speedChartContainer');
+  const speedChartCanvas = document.getElementById('speedChart');
+  const detectionResultsContainer = document.getElementById('detectionResultsContainer');
+  const detectionResults = document.getElementById('detectionResults');
+  
+  // 规则分析器元素
+  const analyzeTocButton = document.getElementById('analyzeTocButton');
+  const analyzeContentButton = document.getElementById('analyzeContentButton');
+  const ruleAnalyzerModal = document.getElementById('ruleAnalyzerModal');
+  const analyzerModalTitle = document.getElementById('analyzerModalTitle');
+  const analyzerModalClose = document.getElementById('analyzerModalClose');
+  const analyzerContent = document.getElementById('analyzerContent');
+  const applyRuleButton = document.getElementById('applyRuleButton');
+  const exportAnalyzedRuleButton = document.getElementById('exportAnalyzedRuleButton');
+  const closeAnalyzerButton = document.getElementById('closeAnalyzerButton');
+  
+  // 清洗规则管理元素
+  const manageCleanRulesButton = document.getElementById('manageCleanRulesButton');
+  const cleanRuleModal = document.getElementById('cleanRuleModal');
+  const cleanRuleModalClose = document.getElementById('cleanRuleModalClose');
+  const cleanRulesList = document.getElementById('cleanRulesList');
+  const addCleanRuleButton = document.getElementById('addCleanRuleButton');
+  const importCleanRulesButton = document.getElementById('importCleanRulesButton');
+  const exportCleanRulesButton = document.getElementById('exportCleanRulesButton');
+  const resetCleanRulesButton = document.getElementById('resetCleanRulesButton');
+
+  let booktitle = null;
+  let tocDiv = null;
+  let chapters = null;
+  let abortController = null;
+  let isDownloading = false;
+  let failedChapters = [];
+  let downloadStartTime = 0;
+  let openedFromMenu = false; // 标记是否从菜单打开
+  let currentSiteSelector = null; // 当前站点选择器
+  let responseTimes = []; // 记录响应时间（用于智能限流）
+  let lastSaveTime = 0; // 进度保存节流时间戳
+
+  let startIndex, finalIndex;
+  let results = []; // 章节内容数组
+  let selectedLinks = []; // 选中的章节链接
+  let totalLinks = 0; // 总章节数
+  let completedRequests = 0; // 已完成请求数
+  let progressUpdateInterval = null; // 进度条实时更新定时器
+
+  // 实时更新进度条（提取为函数，供定时器调用）
+  function updateProgressBar() {
+    if (!isDownloading || totalLinks === 0) return;
+    
+    const progress = Math.round((completedRequests / totalLinks) * 100);
+    const elapsed = (Date.now() - downloadStartTime) / 1000;
+    const speed = elapsed > 0 ? (completedRequests / elapsed).toFixed(2) : '0.00';
+    const remaining = speed > 0 ? Math.ceil((totalLinks - completedRequests) / speed / 60) : 0;
+    
+    progressBar.style.width = `${progress}%`;
+    progressBar.textContent = `${progress}% (${completedRequests}/${totalLinks}) | ${speed}章/秒 | 剩余${remaining}分钟`;
+    
+    // 进度条颜色语义化（根据失败率）
+    if (completedRequests > 0) {
+      const failureRate = failedChapters.length / completedRequests;
+      progressBar.classList.remove('progress-warning', 'progress-error');
+      if (failureRate > 0.2) {
+        progressBar.classList.add('progress-error'); // 失败率>20%：红色
+      } else if (failureRate > 0.05) {
+        progressBar.classList.add('progress-warning'); // 失败率>5%：橙色
+      }
+    }
+    
+    // 更新速度图表
+    if (CONFIG.enableSpeedChart && SpeedChart.ctx && elapsed > 0) {
+      SpeedChart.addSpeed(parseFloat(speed));
+    }
+  }
+
+  // 检测站点结构（选择器策略模式）
+  function detectSiteStructure() {
+    for (const selector of SITE_SELECTORS) {
+      if (document.querySelector(selector.toc)) {
+        console.log(`[站点检测] 使用 ${selector.name} 选择器策略`);
+        return selector;
+      }
+    }
+    console.warn('[站点检测] 未匹配到已知站点，使用默认策略');
+    return SITE_SELECTORS[0]; // 默认使用第一个
+  }
+
+  // 内容清洗函数
+  function cleanContent(text) {
+    let cleaned = text;
+
+    // 先应用所有正则清洗规则
+    for (const pattern of CONTENT_CLEAN_PATTERNS) {
+      cleaned = cleaned.replace(pattern, '');
+    }
+
+    // 清理只包含空白字符的行（空格、制表符等）
+    cleaned = cleaned.replace(/[ \t\r]+\n/g, '\n');
+
+    // 清理大量连续空行（2个以上换行变成1个空行）
+    cleaned = cleaned.replace(/\n{2,}/g, '\n\n');
+
+    // 清理首尾空白
+    cleaned = cleaned.trim();
+
+    return cleaned;
+  }
+
+  // 智能限流：根据响应时间动态调整并发数
+  function adjustConcurrency() {
+    if (responseTimes.length < CONSTANTS.PROGRESS_SAMPLE_SIZE) return;
+    
+    const avgTime = responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length;
+    const oldConcurrency = CONFIG.concurrency;
+    
+    // 使用用户配置的上下限
+    if (avgTime > CONSTANTS.SLOW_RESPONSE_THRESHOLD && CONFIG.concurrency > CONFIG.throttleMin) {
+      CONFIG.concurrency = Math.max(CONFIG.throttleMin, CONFIG.concurrency - 1);
+      console.log(`[智能限流] 响应慢(${avgTime.toFixed(0)}ms)，降低并发: ${oldConcurrency} → ${CONFIG.concurrency}`);
+    } else if (avgTime < CONSTANTS.FAST_RESPONSE_THRESHOLD && CONFIG.concurrency < CONFIG.throttleMax) {
+      CONFIG.concurrency = Math.min(CONFIG.throttleMax, CONFIG.concurrency + 1);
+      console.log(`[智能限流] 响应快(${avgTime.toFixed(0)}ms)，提升并发: ${oldConcurrency} → ${CONFIG.concurrency}`);
+    }
+    
+    // 只保留最近的样本
+    if (responseTimes.length > CONSTANTS.PROGRESS_SAMPLE_MAX) {
+      responseTimes = responseTimes.slice(-CONSTANTS.PROGRESS_SAMPLE_MAX);
+    }
+  }
+
+  // 收集可用的标题选项
+  function collectTitleOptions() {
+    const options = [];
+    const seen = new Set();
+
+    // 0. 【优先】下载按钮所在的 h1 标题
+    const downloadBtnH1 = document.querySelector('button#downloadMenuBtn')?.closest('h1');
+    if (downloadBtnH1) {
+      const text = downloadBtnH1.childNodes[0]?.textContent?.trim() || downloadBtnH1.innerText?.replace('下载', '').trim();
+      if (text) {
+        options.push({ value: 'download_btn_h1', label: `📌 下载位置: ${text}`, text: text });
+        seen.add(text);
+      }
+    }
+
+    // 1. 页面标题
+    const pageTitle = document.title?.trim();
+    if (pageTitle) {
+      options.push({ value: 'page_title', label: `页面标题: ${pageTitle}`, text: pageTitle });
+      seen.add(pageTitle);
+    }
+
+    // 2. h1 标签
+    const h1Elements = document.querySelectorAll('h1');
+    h1Elements.forEach((h1, idx) => {
+      const text = h1.innerText?.trim();
+      if (text && !seen.has(text)) {
+        options.push({ value: `h1_${idx}`, label: `H1标题: ${text}`, text: text });
+        seen.add(text);
+      }
+    });
+
+    // 3. 站点配置的 title 选择器
+    if (currentSiteSelector && currentSiteSelector.title) {
+      const titleElement = document.querySelector(currentSiteSelector.title);
+      if (titleElement) {
+        const text = titleElement.innerText?.trim();
+        if (text && !seen.has(text)) {
+          options.push({ value: 'site_selector', label: `站点配置: ${text}`, text: text });
+          seen.add(text);
+        }
+      }
+    }
+
+    // 4. meta title
+    const metaTitle = document.querySelector('meta[property="og:title"]')?.content?.trim();
+    if (metaTitle && !seen.has(metaTitle)) {
+      options.push({ value: 'meta_title', label: `Meta标题: ${metaTitle}`, text: metaTitle });
+      seen.add(metaTitle);
+    }
+
+    return options;
+  }
+
+  // 更新标题显示
+  function updateTitleDisplay() {
+    const selectedValue = titleSelect.value;
+    const customText = titleCustom.value.trim();
+
+    let newTitle = null;
+
+    if (customText) {
+      newTitle = customText;
+    } else if (selectedValue) {
+      const option = Array.from(titleSelect.options).find(opt => opt.value === selectedValue);
+      if (option) {
+        newTitle = option.dataset.text;
+      }
+    }
+
+    if (newTitle) {
+      booktitle = newTitle;
+      bookInfo.innerText = `当前小说:《${booktitle}》，共 ${chapters.length} 章。`;
+      console.log(`📚 [标题更新] ${booktitle}`);
+    }
+  }
+
+  function downloadMenu() {
+    modal.style.display = 'block';
+
+    // 使用策略模式检测站点结构
+    currentSiteSelector = detectSiteStructure();
+    tocDiv = document.querySelector(currentSiteSelector.toc);
+    
+    if (!tocDiv) {
+      alert('未能识别站点结构，请联系开发者添加支持');
+      return;
+    }
+
+    // 获取章节列表（支持备用选择器，智能过滤"最新章节"区域）
+    if (currentSiteSelector.chaptersAlt && tocDiv.querySelector('dl center.clear')) {
+      chapters = document.querySelectorAll(currentSiteSelector.chaptersAlt);
+    } else {
+      // 智能检测：查找"正文"/"全部章节"区域，跳过"最新章节"区域
+      // biquge.net 等站点有"最新章节"和"正文"两个区域，需要过滤
+      const sectionTitles = document.querySelectorAll('h2.layout-tit, h2');
+      let mainSectionBox = null;
+
+      for (let i = 0; i < sectionTitles.length; i++) {
+        const titleText = sectionTitles[i].innerText || '';
+        // 跳过"最新章节"区域
+        if (titleText.includes('最新章节') && !titleText.includes('正文')) {
+          continue;
+        }
+        // 找到包含"正文"/"全部章节"/"目录"的区域
+        if (titleText.includes('正文') || titleText.includes('全部章节') || titleText.includes('目录')) {
+          // 获取该标题后面的第一个 div.section-box
+          let nextElement = sectionTitles[i].nextElementSibling;
+          while (nextElement) {
+            if (nextElement.classList && nextElement.classList.contains('section-box')) {
+              mainSectionBox = nextElement;
+              break;
+            }
+            nextElement = nextElement.nextElementSibling;
+          }
+          if (mainSectionBox) break;
+        }
+      }
+
+      // 如果找到了主区域，只从该区域提取章节
+      if (mainSectionBox) {
+        // 提取选择器中的最终标签名（如 'a[href]'）
+        const chapterSelector = currentSiteSelector.chapters.split(' ').pop() || 'a[href]';
+        chapters = mainSectionBox.querySelectorAll(chapterSelector);
+      } else {
+        // 降级：使用原来的选择器
+        chapters = document.querySelectorAll(currentSiteSelector.chapters);
+      }
+    }
+
+    if (!chapters.length) {
+      alert('未找到章节列表，请检查页面结构');
+      return;
+    }
+
+    // 章节去重：基于 href 去重，保留第一次出现的顺序
+    const seenUrls = new Set();
+    const uniqueChapters = [];
+    for (const chapter of chapters) {
+      const href = chapter.getAttribute('href');
+      if (href && !seenUrls.has(href)) {
+        seenUrls.add(href);
+        uniqueChapters.push(chapter);
+      }
+    }
+    chapters = uniqueChapters;
+
+    startRangeInput.max = chapters.length;
+    finalRangeInput.max = chapters.length;
+
+    startIndex = 0;
+    finalIndex = chapters.length - 1;
+
+    finalRangeInput.value = chapters.length;
+    startTitle.innerText = chapters[startIndex].innerText;
+    finalTitle.innerText = chapters[finalIndex].innerText;
+
+    // 获取标题选项并填充下拉框
+    const titleOptions = collectTitleOptions();
+    titleSelect.innerHTML = '<option value="">自动检测（推荐）</option>';
+    titleOptions.forEach(opt => {
+      const option = document.createElement('option');
+      option.value = opt.value;
+      option.label = opt.label;
+      option.textContent = opt.label;
+      option.dataset.text = opt.text;
+      titleSelect.appendChild(option);
+    });
+
+    // 读取用户在当前域名保存的标题选择
+    const domain = window.location.hostname;
+    const savedTitlePreference = localStorage.getItem(`bqg_title_prefer_${domain}`);
+    console.log(`📚 [标题偏好] 域名: ${domain}, 保存的选择: ${savedTitlePreference || '无'}`);
+
+    // 恢复用户之前的选择
+    if (savedTitlePreference === 'custom') {
+      // 恢复自定义标题
+      const savedCustomTitle = localStorage.getItem(`bqg_title_custom_${domain}`);
+      if (savedCustomTitle) {
+        titleCustom.value = savedCustomTitle;
+        booktitle = savedCustomTitle;
+        console.log(`✅ [标题恢复] 使用自定义标题: ${booktitle}`);
+      } else {
+        booktitle = document.title;
+      }
+    } else if (savedTitlePreference) {
+      // 检查保存的值是否在下拉框中存在
+      const savedOption = Array.from(titleSelect.options).find(opt => opt.value === savedTitlePreference);
+      if (savedOption) {
+        titleSelect.value = savedTitlePreference;
+        booktitle = savedOption.dataset.text;
+        console.log(`✅ [标题恢复] 使用保存的选择: ${booktitle}`);
+      } else {
+        // 保存的选项不存在，尝试下载按钮位置的 h1 或站点配置
+        const firstOption = titleSelect.querySelector('option[value="download_btn_h1"]') ||
+                           titleSelect.querySelector('option[value="site_selector"]');
+        if (firstOption) {
+          titleSelect.value = firstOption.value;
+          booktitle = firstOption.dataset.text;
+        } else {
+          booktitle = document.title;
+        }
+      }
+    } else {
+      // 没有保存的选择，默认选择下载按钮位置的 h1 或站点配置
+      const defaultOption = titleSelect.querySelector('option[value="download_btn_h1"]') ||
+                           titleSelect.querySelector('option[value="site_selector"]');
+      if (defaultOption) {
+        titleSelect.value = defaultOption.value;
+        booktitle = defaultOption.dataset.text;
+      } else {
+        booktitle = document.title;
+      }
+    }
+    bookInfo.innerText=`当前小说:《${booktitle}》，共 ${chapters.length} 章。`
+
+    // 检查断点续传（如果未禁用）
+    if (!CONFIG.disableResume) {
+      const savedProgress = localStorage.getItem(`bqg_progress_${booktitle}`);
+      if (savedProgress) {
+        try {
+          const progress = JSON.parse(savedProgress);
+          if (progress.totalChapters === chapters.length) {
+            const resumeMsg = `检测到未完成的下载：\n章节范围: ${progress.startIndex + 1}-${progress.finalIndex + 1}\n已完成: ${progress.completedCount}/${progress.totalLinks}\n\n是否继续？`;
+            if (confirm(resumeMsg)) {
+              startIndex = progress.startIndex;
+              finalIndex = progress.finalIndex;
+              startRangeInput.value = startIndex + 1;
+              finalRangeInput.value = finalIndex + 1;
+              startTitle.innerText = chapters[startIndex].innerText;
+              finalTitle.innerText = chapters[finalIndex].innerText;
+              warnInfo.innerText = `将从第 ${progress.completedCount + 1} 章继续下载。点击开始下载继续。`;
+              return;
+            } else {
+              localStorage.removeItem(`bqg_progress_${booktitle}`);
+            }
+          }
+        } catch (e) {
+          console.error('读取进度失败:', e);
+        }
+      }
+    }
+    
+    warnInfo.innerText=`设置范围后点击开始下载，并稍作等待。\n若章节过多下载卡住，可尝试减小章节范围分次下载。`
+
+    if(document.querySelector('button#downloadMenuBtn')) { document.querySelector('button#downloadMenuBtn').hidden=true; }
+  }
+
+  // 添加下载按钮函数（支持重复调用）
+  function addDownloadButton() {
+    const h1 = document.querySelector("h1");
+    if (!h1) return false;
+    
+    // 防止重复添加
+    if (document.querySelector('button#downloadMenuBtn')) return true;
+    
+    let downloadMenuBtn = document.createElement("button");
+    downloadMenuBtn.innerText = "下载"
+    downloadMenuBtn.id="downloadMenuBtn"
+    downloadMenuBtn.style="padding:2px 10px; margin:auto 10px; font-size:15px; background:#ccF8;"
+    h1.append(downloadMenuBtn)
+    downloadMenuBtn.addEventListener('click', downloadMenu);
+    return true;
+  }
+
+  // 初始化添加按钮
+  addDownloadButton();
+
+  // 标题选择事件监听
+  titleSelect.addEventListener('change', () => {
+    // 如果选择了一个选项，清空自定义输入
+    if (titleSelect.value) {
+      titleCustom.value = '';
+      // 保存用户选择到 localStorage（按域名）
+      const domain = window.location.hostname;
+      localStorage.setItem(`bqg_title_prefer_${domain}`, titleSelect.value);
+      console.log(`💾 [标题偏好保存] 域名: ${domain}, 选择: ${titleSelect.value}`);
+    }
+    updateTitleDisplay();
+  });
+
+  // 自定义标题输入事件监听
+  titleCustom.addEventListener('input', () => {
+    const customText = titleCustom.value.trim();
+    // 如果输入了自定义标题，清空下拉选择
+    if (customText) {
+      titleSelect.value = '';
+      // 保存自定义标题标记和内容到 localStorage（按域名）
+      const domain = window.location.hostname;
+      localStorage.setItem(`bqg_title_prefer_${domain}`, 'custom');
+      localStorage.setItem(`bqg_title_custom_${domain}`, customText);
+      console.log(`💾 [标题偏好保存] 域名: ${domain}, 选择: custom（自定义: ${customText}）`);
+    }
+    updateTitleDisplay();
+  });
+
+  // MutationObserver 监听 DOM 变化，处理异步渲染导致的按钮丢失
+  const observer = new MutationObserver((mutations) => {
+    // 检查按钮是否还在，如果丢失则重新添加
+    if (document.querySelector("h1") && !document.querySelector('button#downloadMenuBtn')) {
+      console.log('[笔趣阁下载器] 检测到按钮丢失，重新挂载');
+      addDownloadButton();
+    }
+  });
+
+  // 监听整个 body 的子树变化
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
+  GM_registerMenuCommand('小说下载工具', downloadMenu);
+  GM_registerMenuCommand('⚙️ 下载设置', () => {
+    openedFromMenu = true;
+    document.getElementById('config_concurrency').value = CONFIG.concurrency;
+    document.getElementById('config_retries').value = CONFIG.maxRetries;
+    document.getElementById('config_timeout').value = CONFIG.timeout;
+    document.getElementById('config_minlength').value = CONFIG.minContentLength;
+    document.getElementById('config_throttle_min').value = CONFIG.throttleMin;
+    document.getElementById('config_throttle_max').value = CONFIG.throttleMax;
+    document.getElementById('config_disable_resume').checked = CONFIG.disableResume;
+    console.log('⚙️ [打开配置] 从菜单打开，设置 checkbox =', CONFIG.disableResume);
+    configModal.style.display = 'block';
+  });
+
+  // === 预览功能 ===
+  async function showPreview() {
+    if (!chapters || chapters.length === 0) {
+      alert('请先打开下载窗口');
+      return;
+    }
+    
+    // 随机抽取章节
+    const previewCount = Math.min(CONFIG.previewCount, chapters.length);
+    const indices = [];
+    while (indices.length < previewCount) {
+      const idx = Math.floor(Math.random() * chapters.length);
+      if (!indices.includes(idx)) indices.push(idx);
+    }
+    indices.sort((a, b) => a - b);
+    
+    previewContent.innerHTML = '<div style="text-align:center; color:#999;">加载中...</div>';
+    previewModal.style.display = 'flex';
+    
+    try {
+      const previews = await Promise.all(indices.map(async (idx) => {
+        const link = chapters[idx];
+        const url = link.href;
+        const title = link.textContent.trim();
+        
+        // 简单获取内容（不使用iframe，直接fetch）
+        try {
+          const response = await fetch(url);
+          const html = await response.text();
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(html, 'text/html');
+          
+          // 尝试所有content选择器（currentSiteSelector.content是数组）
+          let contentEl = null;
+          for (const selector of currentSiteSelector.content) {
+            contentEl = doc.querySelector(selector);
+            if (contentEl && contentEl.innerText.trim().length > 10) break;
+          }
+          
+          let content = contentEl ? cleanContent(contentEl.innerText) : '';
+          
+          // 内容检测：过短则尝试 iframe 方式（处理异步加载）
+          if (content.length < CONFIG.minContentLength) {
+            console.log(`[预览] 内容过短(${content.length}字)，尝试 iframe 加载: ${title}`);
+            try {
+              const iframeResult = await fetchContentWithIframe(url, currentSiteSelector.content);
+              content = iframeResult.content;
+            } catch (iframeError) {
+              console.warn(`[预览] iframe 加载失败: ${iframeError.message}`);
+              content = content || '无法获取内容（可能需要异步加载）';
+            }
+          }
+          
+          // 如果还是没内容，显示提示
+          if (!content || content.length < 10) {
+            content = '无法获取内容（页面可能需要登录或异步加载）';
+          }
+          
+          // 截取前200字
+          if (content.length > 200) content = content.substring(0, 200) + '...';
+          
+          return `<div style="margin-bottom:20px; padding:12px; background:#f9f9f9; border-radius:8px;">
+            <div style="font-weight:600; color:#667eea; margin-bottom:8px;">第${idx + 1}章: ${title}</div>
+            <div style="color:#666; line-height:1.8;">${content}</div>
+          </div>`;
+        } catch (e) {
+          return `<div style="margin-bottom:20px; padding:12px; background:#ffebee; border-radius:8px;">
+            <div style="font-weight:600; color:#f44336; margin-bottom:8px;">第${idx + 1}章: ${title}</div>
+            <div style="color:#999;">预览失败: ${e.message}</div>
+          </div>`;
+        }
+      }));
+      
+      previewContent.innerHTML = `<div style="font-size:12px; color:#999; margin-bottom:15px;">随机抽取 ${previewCount} 章进行预览</div>` + previews.join('');
+    } catch (e) {
+      previewContent.innerHTML = `<div style="text-align:center; color:#f44336;">预览失败: ${e.message}</div>`;
+    }
+  }
+  
+  previewButton.addEventListener('click', showPreview);
+  previewModalClose.addEventListener('click', () => previewModal.style.display = 'none');
+  skipPreviewButton.addEventListener('click', () => {
+    CONFIG.enablePreview = false;
+    previewModal.style.display = 'none';
+    alert('已关闭预览功能');
+  });
+  continueDownloadButton.addEventListener('click', () => previewModal.style.display = 'none');
+
+  // === 规则分析功能 ===
+  // 分析章节规则
+  analyzeTocButton.addEventListener('click', () => {
+    analyzerModalTitle.innerText = '📊 章节规则分析';
+    analyzerModalTitle.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+    analyzerContent.innerHTML = '<div style="text-align:center; color:#999;">正在分析目录页结构...</div>';
+    ruleAnalyzerModal.style.display = 'flex';
+    
+    // 异步分析（避免阻塞UI）
+    setTimeout(() => {
+      try {
+        const analyzedRule = RuleAnalyzer.analyzeTocPage();
+        analyzerContent.innerHTML = RuleAnalyzer.generateReport(analyzedRule);
+      } catch (e) {
+        analyzerContent.innerHTML = `<div style="text-align:center; color:#f44336;">分析失败: ${e.message}</div>`;
+      }
+    }, 100);
+  });
+  
+  // 分析内容规则
+  analyzeContentButton.addEventListener('click', () => {
+    analyzerModalTitle.innerText = '🔧 内容规则分析';
+    analyzerModalTitle.style.background = 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)';
+    analyzerContent.innerHTML = '<div style="text-align:center; color:#999;">正在分析内容页结构...</div>';
+    ruleAnalyzerModal.style.display = 'flex';
+    
+    // 异步分析（避免阻塞UI）
+    setTimeout(() => {
+      try {
+        const analyzedRule = RuleAnalyzer.analyzeContentPage();
+        analyzerContent.innerHTML = RuleAnalyzer.generateReport(analyzedRule);
+      } catch (e) {
+        analyzerContent.innerHTML = `<div style="text-align:center; color:#f44336;">分析失败: ${e.message}</div>`;
+      }
+    }, 100);
+  });
+  
+  analyzerModalClose.addEventListener('click', () => ruleAnalyzerModal.style.display = 'none');
+  closeAnalyzerButton.addEventListener('click', () => ruleAnalyzerModal.style.display = 'none');
+  
+  applyRuleButton.addEventListener('click', () => {
+    const rule = RuleAnalyzer.getEditedRule();
+    
+    // 根据类型验证不同字段
+    if (RuleAnalyzer.currentType === 'toc') {
+      if (!rule.name || !rule.toc || !rule.chapters || rule.content.length === 0 || !rule.title) {
+        alert('请填写所有必需字段（站点名称、目录容器、章节链接、内容选择器、标题选择器）');
+        return;
+      }
+    } else {
+      if (!rule.name || rule.content.length === 0) {
+        alert('请填写所有必需字段（站点名称、内容选择器）');
+        return;
+      }
+    }
+    
+    // 添加到自定义站点规则
+    if (SiteRuleManager.addRule(rule)) {
+      // 如果内容规则分析检测到清洗pattern，同步写入 CleanRuleManager
+      if (RuleAnalyzer.currentType === 'content' && rule.cleanPatterns && rule.cleanPatterns.length > 0) {
+        rule.cleanPatterns.forEach((pattern, i) => {
+          CleanRuleManager.addRule({
+            name: `${rule.name} - 清洗规则${i + 1}`,
+            pattern: pattern,
+            flags: 'gi'
+          });
+        });
+        // 重新加载清洗规则到内存
+        CONTENT_CLEAN_PATTERNS = CleanRuleManager.getEnabledPatterns();
+        alert(`✅ 规则"${rule.name}"已成功添加！\n同时写入 ${rule.cleanPatterns.length} 条内容清洗规则。\n\n刷新页面后生效。`);
+      } else {
+        alert(`✅ 规则"${rule.name}"已成功添加到自定义规则！\n\n刷新页面后生效。`);
+      }
+      ruleAnalyzerModal.style.display = 'none';
+      
+      // 更新规则列表（如果规则管理窗口已打开）
+      if (ruleModal.style.display !== 'none') {
+        renderRulesList();
+      }
+    } else {
+      alert('应用规则失败，请打开控制台查看错误信息（F12）');
+    }
+  });
+  
+  exportAnalyzedRuleButton.addEventListener('click', () => {
+    const rule = RuleAnalyzer.getEditedRule();
+    
+    // 验证必需字段
+    if (!rule.name || !rule.toc || !rule.chapters || rule.content.length === 0 || !rule.title) {
+      alert('请填写所有必需字段后再导出');
+      return;
+    }
+    
+    // 生成JSON文件
+    const json = JSON.stringify([rule], null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `bqg_rule_${rule.name}_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    alert('✅ 规则已导出！');
+  });
+
+  // === 规则管理功能 ===
+  function renderRulesList() {
+    const allRules = SiteRuleManager.getAllRules();
+    const html = allRules.map(rule => `
+      <div style="margin-bottom:12px; padding:12px; background:#f9f9f9; border-radius:8px; ${rule.custom ? 'border-left:3px solid #66bb6a;' : ''}">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div style="flex:1;">
+            <div style="font-weight:600; color:#333; margin-bottom:4px;">${rule.name}${rule.custom ? ' <span style="font-size:10px; color:#66bb6a;">[自定义]</span>' : ' <span style="font-size:10px; color:#999;">[内置]</span>'}</div>
+            <div style="font-size:11px; color:#999;">目录: ${rule.toc} | 标题: ${rule.title}</div>
+          </div>
+          ${rule.custom ? `<button onclick="deleteRule('${rule.id}')" style="background:#f44336; color:white; padding:6px 12px; border-radius:4px; font-size:11px;">删除</button>` : ''}
+        </div>
+      </div>
+    `).join('');
+    
+    rulesList.innerHTML = html || '<div style="text-align:center; color:#999; padding:20px;">暂无规则</div>';
+  }
+  
+  window.deleteRule = function(id) {
+    if (confirm('确定删除此规则？')) {
+      if (SiteRuleManager.deleteRule(id)) {
+        renderRulesList();
+        alert('删除成功');
+      } else {
+        alert('删除失败');
+      }
+    }
+  };
+  
+  ruleManageButton.addEventListener('click', () => {
+    renderRulesList();
+    ruleModal.style.display = 'block';
+  });
+  
+  ruleModalClose.addEventListener('click', () => ruleModal.style.display = 'none');
+  
+  addRuleButton.addEventListener('click', () => {
+    const name = prompt('规则名称（如：某某小说网）:');
+    if (!name) return;
+    
+    const toc = prompt('目录选择器（CSS Selector）:');
+    if (!toc) return;
+    
+    const chapters = prompt('章节选择器（CSS Selector）:');
+    if (!chapters) return;
+    
+    const content = prompt('内容选择器（CSS Selector）:');
+    if (!content) return;
+    
+    const title = prompt('标题选择器（CSS Selector）:');
+    if (!title) return;
+    
+    if (SiteRuleManager.addRule({ name, toc, chapters, content, title })) {
+      renderRulesList();
+      alert('添加成功！');
+    } else {
+      alert('添加失败');
+    }
+  });
+  
+  exportRulesButton.addEventListener('click', () => {
+    SiteRuleManager.exportRules();
+  });
+  
+  importRulesButton.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (SiteRuleManager.importRules(event.target.result)) {
+          renderRulesList();
+          alert('导入成功！');
+        } else {
+          alert('导入失败，请检查文件格式');
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  });
+
+  // 配置按钮事件
+  configBtn.addEventListener('click', () => {
+    openedFromMenu = false;
+    document.getElementById('config_concurrency').value = CONFIG.concurrency;
+    document.getElementById('config_retries').value = CONFIG.maxRetries;
+    document.getElementById('config_timeout').value = CONFIG.timeout;
+    document.getElementById('config_minlength').value = CONFIG.minContentLength;
+    document.getElementById('config_throttle_min').value = CONFIG.throttleMin;
+    document.getElementById('config_throttle_max').value = CONFIG.throttleMax;
+    document.getElementById('config_disable_resume').checked = CONFIG.disableResume;
+    console.log('⚙️ [打开配置] 从下载窗口打开，设置 checkbox =', CONFIG.disableResume);
+    configModal.style.display = 'block';
+    modal.style.display = 'none';
+  });
+
+  // 保存配置
+  saveConfigButton.addEventListener('click', () => {
+    // 校验输入值
+    const concurrency = Math.max(1, Math.min(20, parseInt(document.getElementById('config_concurrency').value) || 8));
+    const maxRetries = Math.max(0, Math.min(10, parseInt(document.getElementById('config_retries').value) || 3));
+    const timeout = Math.max(5, Math.min(60, parseInt(document.getElementById('config_timeout').value) || 10));
+    const minContentLength = Math.max(10, Math.min(200, parseInt(document.getElementById('config_minlength').value) || 50));
+    let throttleMin = Math.max(1, Math.min(20, parseInt(document.getElementById('config_throttle_min').value) || 3));
+    let throttleMax = Math.max(1, Math.min(30, parseInt(document.getElementById('config_throttle_max').value) || 15));
+    
+    // 确保下限不大于上限
+    if (throttleMin > throttleMax) {
+      const temp = throttleMin;
+      throttleMin = throttleMax;
+      throttleMax = temp;
+    }
+    
+    CONFIG.concurrency = concurrency;
+    CONFIG.maxRetries = maxRetries;
+    CONFIG.timeout = timeout;
+    CONFIG.minContentLength = minContentLength;
+    CONFIG.throttleMin = throttleMin;
+    CONFIG.throttleMax = throttleMax;
+    CONFIG.disableResume = document.getElementById('config_disable_resume').checked;
+
+    console.log('💾 [保存配置]');
+    console.log(`   禁用断点续传: ${CONFIG.disableResume} (checkbox: ${document.getElementById('config_disable_resume').checked})`);
+
+    localStorage.setItem('bqg_concurrency', CONFIG.concurrency);
+    localStorage.setItem('bqg_maxRetries', CONFIG.maxRetries);
+    localStorage.setItem('bqg_timeout', CONFIG.timeout);
+    localStorage.setItem('bqg_minContentLength', CONFIG.minContentLength);
+    localStorage.setItem('bqg_throttleMin', CONFIG.throttleMin);
+    localStorage.setItem('bqg_throttleMax', CONFIG.throttleMax);
+    localStorage.setItem('bqg_disableResume', CONFIG.disableResume ? 'true' : 'false');
+
+    console.log(`   已写入 localStorage: bqg_disableResume = "${localStorage.getItem('bqg_disableResume')}"`);
+
+    // 验证读取
+    const verifyRead = localStorage.getItem('bqg_disableResume') === 'true';
+    console.log(`   验证读取: ${verifyRead}`);
+
+    // 更新输入框显示（防止用户输入超出范围）
+    document.getElementById('config_concurrency').value = concurrency;
+    document.getElementById('config_retries').value = maxRetries;
+    document.getElementById('config_timeout').value = timeout;
+    document.getElementById('config_minlength').value = minContentLength;
+    document.getElementById('config_throttle_min').value = throttleMin;
+    document.getElementById('config_throttle_max').value = throttleMax;
+    document.getElementById('config_disable_resume').checked = CONFIG.disableResume;
+
+    alert(`设置已保存！\n\n断点续传: ${CONFIG.disableResume ? '已禁用（每次重新下载）' : '已启用（支持断点续传）'}`);
+    configModal.style.display = 'none';
+    
+    // 如果不是从菜单打开的，返回主界面
+    if (!openedFromMenu) {
+      modal.style.display = 'block';
+    }
+    openedFromMenu = false; // 重置标记
+  });
+
+  // 配置弹窗关闭
+  configModalClose.addEventListener('click', () => {
+    configModal.style.display = 'none';
+    // 如果不是从菜单打开的，返回主界面
+    if (!openedFromMenu) {
+      modal.style.display = 'block';
+    }
+    openedFromMenu = false; // 重置标记
+  });
+
+  // === 缓存清除功能 ===
+
+  // 缓存类型定义
+  const CACHE_TYPES = {
+    progress: {
+      name: '下载进度',
+      pattern: /^bqg_progress_/,
+      description: '清除所有下载进度缓存（断点续传数据）'
+    },
+    config: {
+      name: '配置设置',
+      keys: ['bqg_concurrency', 'bqg_maxRetries', 'bqg_timeout', 'bqg_minContentLength',
+             'bqg_throttleMin', 'bqg_throttleMax', 'bqg_enablePreview', 'bqg_previewCount',
+             'bqg_enableDetection', 'bqg_enableSpeedChart', 'bqg_duplicateThreshold',
+             'bqg_adThreshold', 'bqg_disableResume'],
+      description: '清除配置设置（将恢复默认值）',
+      needReload: true
+    },
+    rules: {
+      name: '清洗规则',
+      pattern: /^bqg_(clean_rules|custom_rules|disabled_builtin_rules)$/,
+      description: '清除自定义清洗规则和规则启用状态'
+    },
+    sites: {
+      name: '站点规则',
+      pattern: /^bqg_site_rules$/,
+      description: '清除自定义站点规则'
+    },
+    all: {
+      name: '所有缓存',
+      pattern: /^bqg_/,
+      description: '清除所有缓存数据（包括进度、配置、规则等）',
+      needReload: true
+    }
+  };
+
+  // 清除指定类型的缓存
+  function clearCacheByType(type) {
+    const cacheType = CACHE_TYPES[type];
+    if (!cacheType) {
+      alert('❌ 未知的缓存类型');
+      return;
+    }
+
+    const keysToRemove = [];
+
+    if (cacheType.keys) {
+      // 使用指定的键列表
+      cacheType.keys.forEach(key => {
+        if (localStorage.getItem(key)) {
+          keysToRemove.push(key);
+        }
+      });
+    } else {
+      // 使用正则匹配
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && cacheType.pattern.test(key)) {
+          keysToRemove.push(key);
+        }
+      }
+    }
+
+    if (keysToRemove.length === 0) {
+      alert(`ℹ️ 没有${cacheType.name}需要清除`);
+      return;
+    }
+
+    if (!confirm(`确定要清除${cacheType.name}吗？\n\n${cacheType.description}\n\n将清除 ${keysToRemove.length} 项数据：\n${keysToRemove.map(k => `• ${k}`).join('\n')}\n\n此操作不可撤销！`)) {
+      return;
+    }
+
+    try {
+      console.log('🗑️ [清除缓存] 开始清除...');
+      console.log(`   类型: ${cacheType.name}`);
+      console.log(`   将清除:`, keysToRemove);
+
+      keysToRemove.forEach(key => localStorage.removeItem(key));
+
+      console.log(`✅ [清除完成] 已清除 ${keysToRemove.length} 项数据`);
+      alert(`✅ ${cacheType.name}已清除！\n\n共清除 ${keysToRemove.length} 项数据`);
+
+      if (cacheType.needReload) {
+        console.log('🔄 [页面刷新] 配置已更改，重新加载页面...');
+        location.reload();
+      }
+    } catch (e) {
+      console.error('❌ [清除失败]', e);
+      alert(`❌ 清除失败：${e.message}`);
+    }
+  }
+
+  // 绑定分类清除按钮事件
+  document.querySelectorAll('.cache-clear-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const type = btn.dataset.type;
+      clearCacheByType(type);
+    });
+  });
+
+  // 清除所有缓存按钮
+  const clearAllCacheButton = document.getElementById('clearAllCacheButton');
+  if (clearAllCacheButton) {
+    clearAllCacheButton.addEventListener('click', () => clearCacheByType('all'));
+  }
+
+  // === 内容清洗规则管理功能 ===
+  
+  // 渲染清洗规则列表
+  function renderCleanRulesList() {
+    const rules = CleanRuleManager.getAllRulesWithStatus();
+    
+    if (rules.length === 0) {
+      cleanRulesList.innerHTML = '<div style="text-align:center; color:#999; padding:20px;">暂无清洗规则</div>';
+      return;
+    }
+    
+    const html = rules.map(rule => `
+      <div style="margin-bottom:12px; padding:12px; background:#f9f9f9; border-radius:8px; border-left:4px solid ${rule.enabled ? '#4caf50' : '#ccc'};">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+          <div style="flex:1;">
+            <div style="font-weight:600; color:#333; margin-bottom:4px; display:flex; align-items:center; gap:8px;">
+              <label style="display:flex; align-items:center; cursor:pointer;">
+                <input type="checkbox" ${rule.enabled ? 'checked' : ''}
+                  onchange="toggleCleanRule('${rule.id}', this.checked)"
+                  style="margin-right:6px;">
+                <span>${rule.name}</span>
+              </label>
+              ${rule.builtin ? '<span style="padding:2px 6px; background:#2196f3; color:white; border-radius:4px; font-size:10px;">内置</span>' : '<span style="padding:2px 6px; background:#ff9800; color:white; border-radius:4px; font-size:10px;">自定义</span>'}
+            </div>
+            <div style="font-family:monospace; font-size:11px; color:#666; background:white; padding:6px; border-radius:4px; word-break:break-all;">
+              /${rule.pattern}/${rule.flags}
+            </div>
+          </div>
+          <div style="display:flex; gap:6px; margin-left:12px;">
+            ${!rule.builtin ? `
+              <button onclick="editCleanRule('${rule.id}')" style="padding:4px 10px; background:#4fc3f7; color:white; border-radius:4px; font-size:11px; cursor:pointer;">✏️ 编辑</button>
+              <button onclick="deleteCleanRule('${rule.id}')" style="padding:4px 10px; background:#e53935; color:white; border-radius:4px; font-size:11px; cursor:pointer;">🗑️ 删除</button>
+            ` : ''}
+          </div>
+        </div>
+      </div>
+    `).join('');
+    
+    cleanRulesList.innerHTML = html;
+  }
+  
+  // 切换规则启用状态（全局函数）
+  window.toggleCleanRule = function(id, enabled) {
+    CleanRuleManager.toggleRule(id, enabled);
+    // 重新加载清洗规则
+    CONTENT_CLEAN_PATTERNS = CleanRuleManager.getEnabledPatterns();
+    renderCleanRulesList();
+  };
+  
+  // 编辑规则（全局函数）
+  window.editCleanRule = function(id) {
+    const rules = CleanRuleManager.getCustomRules();
+    const rule = rules.find(r => r.id === id);
+    if (!rule) return;
+    
+    const name = prompt('规则名称：', rule.name);
+    if (!name) return;
+    
+    const pattern = prompt('正则表达式（不含斜杠和标志）：', rule.pattern);
+    if (!pattern) return;
+    
+    const flags = prompt('正则标志（如：gi, g, i）：', rule.flags);
+    if (flags === null) return;
+    
+    // 测试正则表达式是否有效
+    try {
+      new RegExp(pattern, flags);
+    } catch (e) {
+      alert(`正则表达式格式错误：${e.message}`);
+      return;
+    }
+    
+    CleanRuleManager.updateRule(id, { name, pattern, flags });
+    // 重新加载清洗规则
+    CONTENT_CLEAN_PATTERNS = CleanRuleManager.getEnabledPatterns();
+    renderCleanRulesList();
+    alert('规则已更新！');
+  };
+  
+  // 删除规则（全局函数）
+  window.deleteCleanRule = function(id) {
+    if (!confirm('确定要删除这条规则吗？')) return;
+    
+    CleanRuleManager.deleteRule(id);
+    // 重新加载清洗规则
+    CONTENT_CLEAN_PATTERNS = CleanRuleManager.getEnabledPatterns();
+    renderCleanRulesList();
+    alert('规则已删除！');
+  };
+  
+  // 打开清洗规则管理弹窗
+  manageCleanRulesButton.addEventListener('click', () => {
+    renderCleanRulesList();
+    cleanRuleModal.style.display = 'block';
+    configModal.style.display = 'none';
+  });
+  
+  // 关闭清洗规则弹窗
+  cleanRuleModalClose.addEventListener('click', () => {
+    cleanRuleModal.style.display = 'none';
+    configModal.style.display = 'block';
+  });
+  
+  // 添加清洗规则
+  addCleanRuleButton.addEventListener('click', () => {
+    const name = prompt('请输入规则名称：');
+    if (!name) return;
+    
+    const pattern = prompt('请输入正则表达式（不含斜杠和标志）：\n\n示例：\n- 匹配网址：https?:\\\\/\\\\/[^\\\\s]+\n- 匹配域名：[a-z0-9]+[\\\\s·点][a-z]{2,}');
+    if (!pattern) return;
+    
+    const flags = prompt('请输入正则标志（如：gi, g, i）：', 'g');
+    if (flags === null) return;
+    
+    // 测试正则表达式是否有效
+    try {
+      new RegExp(pattern, flags);
+    } catch (e) {
+      alert(`正则表达式格式错误：${e.message}`);
+      return;
+    }
+    
+    CleanRuleManager.addRule({ name, pattern, flags });
+    // 重新加载清洗规则
+    CONTENT_CLEAN_PATTERNS = CleanRuleManager.getEnabledPatterns();
+    renderCleanRulesList();
+    alert('规则已添加！');
+  });
+  
+  // 导入清洗规则
+  importCleanRulesButton.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json';
+    input.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        if (CleanRuleManager.importRules(evt.target.result)) {
+          // 重新加载清洗规则
+          CONTENT_CLEAN_PATTERNS = CleanRuleManager.getEnabledPatterns();
+          renderCleanRulesList();
+          alert('导入成功！');
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  });
+  
+  // 导出清洗规则
+  exportCleanRulesButton.addEventListener('click', () => {
+    const rules = CleanRuleManager.getCustomRules();
+    if (rules.length === 0) {
+      alert('暂无自定义规则可导出');
+      return;
+    }
+    CleanRuleManager.exportRules();
+  });
+  
+  // 重置清洗规则
+  resetCleanRulesButton.addEventListener('click', () => {
+    if (!confirm('确定要重置为默认规则吗？这将清除所有自定义规则和禁用设置。')) return;
+    
+    CleanRuleManager.resetToDefault();
+    // 重新加载清洗规则
+    CONTENT_CLEAN_PATTERNS = CleanRuleManager.getEnabledPatterns();
+    renderCleanRulesList();
+    alert('已重置为默认规则！');
+  });
+
+  fetcClose.addEventListener('click', async () => {
+    modal.style.display = 'none';
+    if(document.querySelector('button#downloadMenuBtn')) { document.querySelector('button#downloadMenuBtn').hidden=false; }
+  });
+
+  startRangeInput.addEventListener('input', function() {
+    let val = parseInt(startRangeInput.value)
+    if (!isNaN(val)) {
+      if (val < 1) {val = 1;}
+      if (val > chapters.length) {val = chapters.length;}
+      startRangeInput.value = val;
+      startIndex = parseInt(val) - 1;
+      startTitle.innerText = chapters[startIndex].innerText;
+    }
+  });
+
+  finalRangeInput.addEventListener('input', function() {
+    let val = parseInt(finalRangeInput.value)
+    if (!isNaN(val)) {
+      if (val < 1) {val = 1;}
+      if (val > chapters.length) {val = chapters.length;}
+      finalRangeInput.value = val;
+      finalIndex = parseInt(val) - 1;
+      finalTitle.innerText = chapters[finalIndex].innerText;
+    }
+  });
+
+  // 重试失败章节按钮事件
+  retryFailedButton.addEventListener('click', async () => {
+    if (failedChapters.length === 0) return;
+    
+    retryFailedButton.disabled = true;
+    retryFailedButton.innerText = '重试中...';
+    progressBar.classList.remove('progress-warning', 'progress-error');
+    
+    const retryTasks = failedChapters.map(failed => {
+      const chapterIndex = failed.index - startIndex - 1; // 转换为相对索引
+      return { 
+        link: selectedLinks[chapterIndex], 
+        index: chapterIndex,
+        originalIndex: failed.index
+      };
+    });
+    
+    let retryCompleted = 0;
+    const retryTotal = retryTasks.length;
+    const newFailures = [];
+    
+    // 重试失败章节
+    for (const task of retryTasks) {
+      try {
+        const url = task.link.href;
+        results[task.index] = await fetchContent(url, task.link);
+        retryCompleted++;
+        progressBar.textContent = `重试中: ${retryCompleted}/${retryTotal}`;
+      } catch (error) {
+        newFailures.push({ 
+          index: task.originalIndex, 
+          title: task.link.innerText, 
+          error: error.message 
+        });
+      }
+    }
+    
+    // 更新失败列表
+    failedChapters = newFailures;
+    
+    if (failedChapters.length === 0) {
+      failedChaptersInfo.style.display = 'none';
+      alert(`所有章节重试成功！`);
+    } else {
+      failedChaptersList.innerHTML = failedChapters.map(f => 
+        `<div style="margin:3px 0;">第${f.index}章: ${f.title}<br><span style="font-size:11px; color:#666;">错误: ${f.error}</span></div>`
+      ).join('');
+      alert(`重试完成：${retryCompleted - failedChapters.length}/${retryTotal} 章成功，${failedChapters.length} 章仍然失败。`);
+    }
+    
+    // 重新生成下载文件（使用公共函数）
+    generateDownloadFile();
+    
+    retryFailedButton.disabled = false;
+    retryFailedButton.innerText = '重试失败章节';
+  });
+
+  // 生成下载文件（内存优化：提取公共逻辑，使用Blob分块构建）
+  function generateDownloadFile() {
+    const bookInfoDiv = document.querySelector(currentSiteSelector.bookInfo);
+    
+    // 使用数组收集内容块，最后一次性join（O(n)性能）
+    // 注：当前实现已相对优化，真正的流式写入会显著增加复杂度
+    // 对于典型场景（几百章，每章几KB），当前方案已足够高效
+    const parts = [];
+    parts.push(bookInfoDiv ? bookInfoDiv.innerText : booktitle);
+    parts.push(`\n\n下载章节索引范围：${startIndex+1} ~ ${finalIndex+1}\n`);
+    parts.push(`\n来自链接：${document.URL}\n`);
+    parts.push("\n-----------------------\n");
+    
+    // 遍历章节内容
+    results.forEach((result) => {
+      parts.push(`\n## ${result.title}\n\n`);
+      parts.push(result.content + '\n');
+    });
+    
+    parts.push("\n-----------------------\n");
+    
+    // 一次性创建Blob（而非多次拼接字符串）
+    const blob = new Blob([parts.join('')], { type: 'text/plain' });
+    downlink.href = URL.createObjectURL(blob);
+    downlink.download = `${booktitle}.txt`;
+    downlink.click();
+  }
+
+  // 使用 iframe 加载页面（等待 JS 执行完成）
+  async function fetchContentWithIframe(url, contentSelector) {
+    return new Promise((resolve, reject) => {
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = url;
+      
+      let timeoutId;
+      let checkInterval;
+      
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        clearInterval(checkInterval);
+        iframe.src = 'about:blank'; // 停止所有网络请求
+        if (iframe.parentNode) {
+          document.body.removeChild(iframe);
+        }
+      };
+      
+      // 超时保护
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new Error('iframe 加载超时'));
+      }, CONFIG.timeout * 1000);
+      
+      iframe.onload = () => {
+        try {
+          const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+          
+          // 轮询检测内容是否出现
+          checkInterval = setInterval(() => {
+            const contentDiv = iframeDoc.querySelector(contentSelector[0]) || 
+                               iframeDoc.querySelector(contentSelector[1]) || 
+                               iframeDoc.querySelector(contentSelector[2]);
+            
+            if (contentDiv && contentDiv.innerText.trim().length > CONFIG.minContentLength) {
+              cleanup();
+              
+              // 清理广告
+              contentDiv.querySelectorAll('div#device').forEach(ad => ad.remove());
+              contentDiv.querySelectorAll('p.readinline > a[href*="javascript:"]').forEach(op => op.remove());
+              contentDiv.innerHTML = contentDiv.innerHTML.replaceAll('<br>', '\n');
+              
+              const title = iframeDoc.querySelector('h1')?.innerText || '';
+              const content = cleanContent(contentDiv.innerText); // 使用内容清洗
+              
+              resolve({ title, content });
+            }
+          }, CONSTANTS.IFRAME_CHECK_INTERVAL);
+          
+        } catch (error) {
+          cleanup();
+          reject(error);
+        }
+      };
+      
+      iframe.onerror = () => {
+        cleanup();
+        reject(new Error('iframe 加载失败'));
+      };
+      
+      document.body.appendChild(iframe);
+    });
+  }
+
+  async function fetchContent(url, link) {
+    let allContent = '';
+    let title = '';
+
+    async function fetchPage(pageUrl) {
+      const response = await fetch(pageUrl, { 
+        method: "GET",
+        signal: abortController ? abortController.signal : null
+      });
+      if (!response.ok) {
+        const errorMsg = response.status === 404 ? '章节不存在(404)' :
+                         response.status === 403 ? '访问被拒绝(403)' :
+                         response.status === 503 ? '服务器现在无法处理请求(503)' :
+                         response.status >= 500 ? `服务器错误(${response.status})` :
+                         `HTTP 错误(${response.status})`;
+        throw new Error(errorMsg);
+      }
+
+      let text = '';
+      const contentType = response.headers.get('Content-Type');
+      if (contentType) {
+        let charset = 'utf-8'; // 默认编码
+        const charsetMatch = contentType && contentType.match(/charset=([^;]+)/i);
+        if (charsetMatch) {
+          charset = charsetMatch[1].toLowerCase();
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        const decoder = new TextDecoder(charset);
+        text = decoder.decode(new Uint8Array(arrayBuffer));
+      } else {
+        text = await response.text();
+      }
+
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(text, 'text/html');
+
+      // 使用站点配置的内容选择器
+      let contentDiv = null;
+      for (const selector of currentSiteSelector.content) {
+        contentDiv = doc.querySelector(selector);
+        if (contentDiv) break;
+      }
+
+      // 降级：如果配置的选择器都找不到，尝试常见选择器
+      if (!contentDiv) {
+        contentDiv = doc.querySelector('div#content') || doc.querySelector('#chaptercontent') || doc.querySelector('.content');
+      }
+
+      if (contentDiv) {
+        contentDiv.querySelectorAll('div#device').forEach(function(web_ad) {
+          web_ad.remove();
+        });
+        contentDiv.querySelectorAll('p.readinline > a[href*="javascript:"]').forEach(function(web_op) {
+          web_op.remove();
+        });
+        contentDiv.innerHTML = contentDiv.innerHTML.replaceAll('<br>', '\n');
+        const extractedContent = contentDiv.innerText.trim();
+        const cleanedContent = cleanContent(extractedContent); // 使用内容清洗
+        
+        // 内容校验：如果内容太少，可能是异步加载未完成
+        if (cleanedContent.length < CONFIG.minContentLength) {
+          console.warn(`[异步加载检测] ${pageUrl} 内容过短，尝试使用 iframe 等待加载`);
+          try {
+            const iframeResult = await fetchContentWithIframe(pageUrl, currentSiteSelector.content);
+            allContent += iframeResult.content + '\n\n';
+            if (!title && iframeResult.title) {
+              title = iframeResult.title;
+            }
+            return; // 成功获取，直接返回
+          } catch (iframeError) {
+            console.error(`[iframe 加载失败] ${pageUrl}:`, iframeError);
+            // 降级：使用原内容（即使很短）
+            allContent += cleanedContent + '\n\n';
+          }
+        } else {
+          allContent += cleanedContent + '\n\n';
+        }
+      } else {
+        // 完全找不到内容元素，尝试 iframe
+        console.warn(`[异步加载检测] ${pageUrl} 未找到内容元素，尝试使用 iframe`);
+        try {
+          const iframeResult = await fetchContentWithIframe(pageUrl, currentSiteSelector.content);
+          allContent += iframeResult.content + '\n\n';
+          if (!title && iframeResult.title) {
+            title = iframeResult.title;
+          }
+        } catch (iframeError) {
+          console.error(`[iframe 加载失败] ${pageUrl}:`, iframeError);
+          throw new Error('无法获取章节内容（元素不存在且 iframe 加载失败）');
+        }
+      }
+
+      if (doc.querySelector('h1')) {
+        title = doc.querySelector('h1').innerText;
+      }
+
+      const nextPage = doc.querySelector('.read-page a[href][rel="next"]');
+      if (nextPage && (nextPage.innerText == '下一页')) {
+        console.log(nextPage.href);
+        const nextUrl = nextPage.href.startsWith('http') ? nextPage.href : new URL(nextPage.href, pageUrl).href;
+        await fetchPage(nextUrl);
+      }
+    }
+
+    await fetchPage(url);
+
+    if (link && !title) {
+      title = link.innerText;
+    }
+
+    return { title: title, content: allContent };
+  }
+
+  fetchButton.addEventListener('click', async () => {
+    // 取消下载功能
+    if (isDownloading) {
+      if (confirm('确定要取消当前下载吗？进度将会保存。')) {
+        abortController.abort();
+        fetchButton.innerText = '开始下载';
+        isDownloading = false;
+      }
+      return;
+    }
+
+    downlink.innerText = "";
+    downlink.href = null;
+    downlink.download = null;
+    fetchButton.innerText = '取消下载';
+    isDownloading = true;
+    failedChapters = [];
+    downloadStartTime = Date.now();
+    
+    // 初始化速度图表
+    if (CONFIG.enableSpeedChart) {
+      speedChartContainer.style.display = 'block';
+      SpeedChart.init(speedChartCanvas);
+    }
+    
+    // 隐藏检测结果（清空上次结果）
+    detectionResultsContainer.style.display = 'none';
+    
+    // 启动进度条实时刷新（每200ms更新一次）
+    progressBar.style.width = '0%';
+    progressBar.textContent = '准备下载...';
+    progressUpdateInterval = setInterval(updateProgressBar, 200);
+    
+    // AbortController 兼容性检查
+    abortController = typeof AbortController !== 'undefined' 
+      ? new AbortController() 
+      : { signal: null, abort: () => console.warn('[兼容性] AbortController 不支持') };
+
+    if (startIndex > finalIndex) {
+      let temp0 = startIndex;
+      let temp1 = finalIndex;
+      startIndex = temp1;
+      finalIndex = temp0;
+      startRangeInput.value = startIndex+1;
+      startTitle.innerText = chapters[startIndex].innerText;
+      finalRangeInput.value = finalIndex+1;
+      finalTitle.innerText = chapters[finalIndex].innerText;
+    }
+
+    // 使用已检测的章节列表，而不是硬编码选择器
+    selectedLinks = Array.from(chapters).slice(startIndex, finalIndex+1);
+
+    if (!booktitle){
+      booktitle = document.title;
+    }
+    results = [];
+    totalLinks = selectedLinks.length;
+    completedRequests = 0;
+
+    console.log('═══════════════════════════════════════════════════════');
+    console.log('🚀 [开始下载] 参数信息：');
+    console.log(`  书名: ${booktitle}`);
+    // 显示标题来源
+    if (titleCustom.value.trim()) {
+      console.log(`  标题来源: 自定义输入`);
+    } else if (titleSelect.value) {
+      const option = titleSelect.options[titleSelect.selectedIndex];
+      console.log(`  标题来源: ${option.text}`);
+    } else {
+      console.log(`  标题来源: 自动检测`);
+    }
+    console.log(`  章节范围: ${startIndex + 1} ~ ${finalIndex + 1}`);
+    console.log(`  总章节数: ${totalLinks}`);
+    console.log(`  断点续传: ${CONFIG.disableResume ? '已禁用' : '已启用'}`);
+    console.log('═══════════════════════════════════════════════════════');
+
+    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    // 检查是否有保存的进度（用于续传）
+    let savedResults = [];
+    if (!CONFIG.disableResume) {
+      const progressKey = `bqg_progress_${booktitle}`;
+      const savedProgress = localStorage.getItem(progressKey);
+      console.log(`📦 [断点续传检查] 缓存键: ${progressKey}`);
+
+      if (savedProgress) {
+        console.log('✅ 找到缓存数据，解析中...');
+        try {
+          const progress = JSON.parse(savedProgress);
+          console.log('📋 缓存内容:', {
+            缓存范围: `${progress.startIndex + 1} ~ ${progress.finalIndex + 1}`,
+            当前范围: `${startIndex + 1} ~ ${finalIndex + 1}`,
+            已完成: `${progress.completedCount}/${progress.totalLinks}`,
+            结果数组长度: progress.results ? progress.results.length : 0
+          });
+
+          if (progress.startIndex === startIndex && progress.finalIndex === finalIndex && progress.results) {
+            savedResults = progress.results;
+            completedRequests = progress.completedCount || 0;
+            console.log(`🔄 [断点续传] 恢复 ${completedRequests} 个已下载章节，从第 ${completedRequests + 1} 章继续`);
+          } else {
+            console.log('⚠️ 缓存范围不匹配或无结果数据，将重新下载');
+          }
+        } catch (e) {
+          console.error('❌ 解析保存的进度失败:', e);
+        }
+      } else {
+        console.log('ℹ️ 未找到缓存数据，将全新下载');
+      }
+    } else {
+      // 禁用续传时，清除旧进度缓存
+      const oldProgress = localStorage.getItem(`bqg_progress_${booktitle}`);
+      if (oldProgress) {
+        localStorage.removeItem(`bqg_progress_${booktitle}`);
+        console.log('🗑️ [断点续传已禁用] 已清除旧的进度缓存');
+      } else {
+        console.log('ℹ️ [断点续传已禁用] 无旧缓存需要清除');
+      }
+    }
+
+    const fetchAndParse = async (link, index, retryCount = 0) => {
+      // 如果已有保存的结果，直接跳过
+      if (savedResults[index]) {
+        console.log(`⏭️ [跳过章节#${index + 1}] ${link.innerText.trim()} (使用缓存)`);
+        results[index] = savedResults[index];
+        completedRequests++;
+        const progress = Math.round((completedRequests / totalLinks) * 100);
+        const elapsed = (Date.now() - downloadStartTime) / 1000;
+        const speed = (completedRequests / elapsed).toFixed(2);
+        const remaining = Math.ceil((totalLinks - completedRequests) / speed / 60);
+        progressBar.style.width = `${progress}%`;
+        progressBar.textContent = `${progress}% (${completedRequests}/${totalLinks}) | ${speed}章/秒 | 剩余${remaining}分钟`;
+        return;
+      }
+
+      const url = link.href;
+      const chapterTitle = link.innerText.trim();
+      const requestStartTime = Date.now(); // 记录请求开始时间
+
+      console.log(`📥 [下载章节#${index + 1}] ${chapterTitle}`);
+      console.log(`   URL: ${url}`);
+
+      try {
+        results[index] = await fetchContent(url, link);
+
+        // 记录响应时间（用于智能限流）
+        const responseTime = Date.now() - requestStartTime;
+        responseTimes.push(responseTime);
+
+        console.log(`✅ [下载成功#${index + 1}] ${chapterTitle} (${responseTime}ms)`);
+
+        // 每10个请求调整一次并发数
+        if (completedRequests % 10 === 0) {
+          adjustConcurrency();
+        }
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          throw error; // 用户取消，直接抛出
+        }
+        if (retryCount < CONFIG.maxRetries) {
+          console.warn(`🔄 [重试章节#${index + 1}] 第 ${retryCount + 1}/${CONFIG.maxRetries} 次: ${chapterTitle}`);
+          await delay(CONSTANTS.RETRY_BASE_DELAY * (retryCount + 1)); // 指数退避
+          return fetchAndParse(link, index, retryCount + 1);
+        }
+        console.error(`❌ [下载失败#${index + 1}] ${chapterTitle}: ${error.message}`);
+        results[index] = { title: link.innerText, content: `抓取失败（已重试${CONFIG.maxRetries}次）: ${error.message}` };
+        failedChapters.push({ index: index + startIndex + 1, title: link.innerText, error: error.message });
+      } finally {
+        // 增加完成计数（实际更新由定时器负责）
+        completedRequests++;
+
+        // 保存进度（节流优化：1秒保存一次，避免高频写入）
+        const now = Date.now();
+        if (now - lastSaveTime > CONSTANTS.PROGRESS_SAVE_THROTTLE || completedRequests === totalLinks) {
+          const progressData = {
+            startIndex,
+            finalIndex,
+            completedCount: completedRequests,
+            totalLinks,
+            totalChapters: chapters.length,
+            results: results.filter(r => r) // 只保存已完成的
+          };
+          localStorage.setItem(`bqg_progress_${booktitle}`, JSON.stringify(progressData));
+          console.log(`💾 [进度保存] ${completedRequests}/${totalLinks} 章 (${Math.round((completedRequests / totalLinks) * 100)}%)`);
+          lastSaveTime = now;
+        }
+      }
+    };
+
+    // Promise Pool 并发控制
+    async function promisePool(tasks, concurrency) {
+      const executing = [];
+      for (const task of tasks) {
+        const p = task();
+        executing.push(p);
+        if (executing.length >= concurrency) {
+          await Promise.race(executing);
+          executing.splice(executing.findIndex(e => e === p || !e.isPending), 1);
+        }
+      }
+      await Promise.all(executing);
+    }
+
+    const tasks = selectedLinks.map((link, index) => () => fetchAndParse(link, index));
+    promisePool(tasks, CONFIG.concurrency)
+      .then(() => {
+      // 清除定时器
+      if (progressUpdateInterval) {
+        clearInterval(progressUpdateInterval);
+        progressUpdateInterval = null;
+      }
+
+      isDownloading = false;
+      fetchButton.innerText = '开始下载';
+      fetchButton.disabled = false;
+
+      // 最后更新一次进度条（确保显示100%）
+      updateProgressBar();
+
+      console.log('═══════════════════════════════════════════════════════');
+      console.log('🎉 [下载完成] 统计信息：');
+      console.log(`  总章节: ${totalLinks}`);
+      console.log(`  成功: ${results.filter(r => r && !r.content.includes('抓取失败')).length}`);
+      console.log(`  失败: ${failedChapters.length}`);
+      console.log(`  耗时: ${Math.round((Date.now() - downloadStartTime) / 1000)}秒`);
+      console.log('═══════════════════════════════════════════════════════');
+
+      // 清除进度（下载完成）
+      const progressKey = `bqg_progress_${booktitle}`;
+      localStorage.removeItem(progressKey);
+      console.log(`🗑️ [清除缓存] 已删除进度缓存: ${progressKey}`);
+      
+      // === 内容质量检测 ===
+      if (CONFIG.enableDetection) {
+        const detections = [];
+
+        // [已移除] 重复内容检测
+
+        // 1. 检测广告内容
+        let adCount = 0;
+        results.filter(r => r && r.content).forEach(r => {
+          const adResult = ContentDetector.detectAds(r.content);
+          if (adResult.isAd) {
+            adCount++;
+          }
+        });
+        if (adCount > 0) {
+          detections.push(`<div style="margin-bottom:8px;"><strong>广告检测:</strong> ${adCount} 章疑似包含大量广告内容</div>`);
+        }
+
+        // 2. 检测异常内容
+        let abnormalCount = 0;
+        const abnormalDetails = [];
+        results.filter(r => r && r.content).forEach(r => {
+          const issues = ContentDetector.detectAbnormal(r.content);
+          if (issues.length > 0) {
+            abnormalCount++;
+            if (abnormalDetails.length < 5) {
+              abnormalDetails.push(`<div style="margin-left:12px; font-size:10px; color:#999;">• ${r.title}: ${issues.join(', ')}</div>`);
+            }
+          }
+        });
+        if (abnormalCount > 0) {
+          detections.push(`<div style="margin-bottom:8px;"><strong>异常内容:</strong> ${abnormalCount} 章存在异常</div>`);
+          detections.push(...abnormalDetails);
+        }
+        
+        // 显示检测结果
+        if (detections.length > 0) {
+          detectionResults.innerHTML = detections.join('');
+          detectionResultsContainer.style.display = 'block';
+        } else {
+          detectionResults.innerHTML = '<div style="color:#66bb6a;">✓ 未发现明显质量问题</div>';
+          detectionResultsContainer.style.display = 'block';
+        }
+      }
+      
+      // 显示失败章节信息（使用UI而非alert）
+      if (failedChapters.length > 0) {
+        failedChaptersList.innerHTML = failedChapters.map(f => 
+          `<div style="margin:3px 0;">第${f.index}章: ${f.title}<br><span style="font-size:11px; color:#666;">错误: ${f.error}</span></div>`
+        ).join('');
+        failedChaptersInfo.style.display = 'block';
+      } else {
+        failedChaptersInfo.style.display = 'none';
+      }
+      
+      // 生成下载文件
+      console.log('📄 [生成文件] 开始生成TXT文件...');
+      downlink.innerText = "若未开始自动下载，点击这里";
+      generateDownloadFile();
+      console.log(`✅ [文件生成] ${booktitle}.txt`);
+      fetchButton.disabled = false;
+    })
+      .catch((error) => {
+      // 清除定时器
+      if (progressUpdateInterval) {
+        clearInterval(progressUpdateInterval);
+        progressUpdateInterval = null;
+      }
+
+      console.log('═══════════════════════════════════════════════════════');
+      console.log('❌ [下载异常/取消]');
+
+      isDownloading = false;
+      fetchButton.innerText = '开始下载';
+      fetchButton.disabled = false;
+
+      if (error.name === 'AbortError') {
+        console.log(`⏸️ [用户取消] 已完成 ${completedRequests}/${totalLinks} 章`);
+        console.log(`💾 [进度保存] 缓存键: bqg_progress_${booktitle}`);
+        progressBar.textContent = '已取消（进度已保存）';
+        alert(`下载已取消！\n\n已完成 ${completedRequests}/${totalLinks} 章。\n下次打开可以继续下载。`);
+      } else {
+        console.error('❌ [错误详情]', error);
+        alert(`下载出错：${error.message}`);
+      }
+    });
+
+  });
+})();
