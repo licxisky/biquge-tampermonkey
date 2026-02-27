@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         笔趣阁下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.9.7
-// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net|alicesw.com|3haitang.com)
+// @version      0.9.8
+// @description  可在笔趣阁下载小说（TXT格式）。支持断点续传、取消下载、速度显示、失败重试、一键重试失败章节、可配置参数（含智能限流上下限）、智能限流、内容清洗、进度条语义化、老浏览器兼容、现代化UI设计、章节预览、内容质量检测（重复/广告/异常）、实时速度图表、站点规则管理（自定义站点支持）、智能规则分析（自动提取站点选择器）、手动元素标记（AdGuard风格）。在小说目录页面使用。（仅供交流，可能存在bug）（已测试网址:beqege.cc|bigee.cc|bqgui.cc|bbiquge.la|3bqg.cc|xbiqugew.com|bqg862.xyz|bqg283.cc|snapd.net|alicesw.com|3haitang.com)
 // @author       Licxisky
 // @match        *://*/*
 // @exclude      *://baidu.com/*
@@ -868,6 +868,324 @@
     }
   };
 
+  // ============================================================
+  // 手动元素标记器（模拟 AdGuard 手动屏蔽逻辑）
+  // 在无法识别的网页上允许用户点选 DOM 元素，打上语义标签后
+  // 自动生成 CSS 选择器并写入 SiteRuleManager 持久化。
+  // ============================================================
+  const ElementPicker = {
+    _mode: null,         // 'toc' | 'content'
+    _picked: {},         // { toc, chapters, title, bookInfo, content, nextPage }
+    _toolbar: null,      // 顶部浮动工具栏
+    _menu: null,         // 气泡选择菜单
+    _highlight: null,    // 当前悬停高亮元素
+    _onComplete: null,   // 完成后的回调
+    _onMouseMove: null,  // 事件监听器引用（用于清理）
+    _onMouseClick: null,
+
+    // 各模式下可标记的类型定义
+    _modeTypes: {
+      toc: [
+        { key: 'toc',      label: '📋 目录容器', desc: '包含所有章节链接的外层容器（必选）', required: true },
+        { key: 'title',    label: '📌 书名',     desc: '显示书名的标题元素（必选）',         required: true },
+        { key: 'bookInfo', label: 'ℹ️ 书籍信息', desc: '作者/简介等信息区域（可选）',        required: false }
+      ],
+      content: [
+        { key: 'content',  label: '📖 章节正文', desc: '当前章节的正文内容区域（必选）', required: true },
+        { key: 'nextPage', label: '⏭️ 下一页',   desc: '翻到下一页的链接按钮（可选）',   required: false }
+      ]
+    },
+
+    // 进入标记模式
+    start(mode, onComplete) {
+      this._mode = mode;
+      this._picked = {};
+      this._onComplete = onComplete || null;
+      this._createToolbar();
+      this._bindEvents();
+      document.documentElement.classList.add('bqg-picker-mode');
+      showToast(
+        `🎯 已进入手动标记模式（${mode === 'toc' ? '目录页' : '内容页'}）\n鼠标悬停选取元素，点击元素选择类型`,
+        'info', 4000
+      );
+    },
+
+    // 退出标记模式
+    stop() {
+      document.documentElement.classList.remove('bqg-picker-mode');
+      this._removeMouseListeners();
+      if (this._toolbar) { this._toolbar.remove(); this._toolbar = null; }
+      if (this._menu)    { this._menu.remove();    this._menu = null;    }
+      this._clearHighlight();
+      // 清除所有已标记元素的颜色
+      document.querySelectorAll('.bqg-picker-marked').forEach(el => el.classList.remove('bqg-picker-marked'));
+      this._mode = null;
+    },
+
+    // 生成最紧凑的 CSS 选择器
+    // 优先级: #id > unique-class > parent > tag
+    generateSelector(el) {
+      if (!el || el === document.body || el === document.documentElement) return 'body';
+
+      // 1. #id（唯一）
+      if (el.id) {
+        const escaped = CSS.escape(el.id);
+        if (document.querySelectorAll('#' + escaped).length === 1) return '#' + el.id;
+      }
+
+      // 2. 单个唯一 class
+      if (el.classList && el.classList.length > 0) {
+        for (const cls of el.classList) {
+          const sel = '.' + CSS.escape(cls);
+          if (document.querySelectorAll(sel).length === 1) return '.' + cls;
+        }
+        // 多 class 组合
+        const combined = '.' + Array.from(el.classList).map(c => CSS.escape(c)).join('.');
+        if (document.querySelectorAll(combined).length === 1) {
+          return '.' + Array.from(el.classList).join('.');
+        }
+      }
+
+      // 3. parent > tag 组合
+      const tag = el.tagName.toLowerCase();
+      const parent = el.parentElement;
+      if (parent) {
+        let parentSel = null;
+        if (parent.id) {
+          parentSel = '#' + parent.id;
+        } else if (parent.classList && parent.classList.length > 0) {
+          parentSel = parent.tagName.toLowerCase() + '.' + Array.from(parent.classList).join('.');
+        }
+        if (parentSel) {
+          const composed = `${parentSel} > ${tag}`;
+          if (document.querySelectorAll(composed).length <= 3) return composed;
+        }
+      }
+
+      // 4. 降级
+      return tag;
+    },
+
+    // 创建顶部浮动工具栏
+    _createToolbar() {
+      if (this._toolbar) this._toolbar.remove();
+      const types = this._modeTypes[this._mode] || [];
+      const bar = document.createElement('div');
+      bar.id = 'bqg-picker-toolbar';
+      bar.innerHTML = `
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <span style="font-weight:700;font-size:14px;color:#fff;white-space:nowrap;">
+            🎯 手动标记（${this._mode === 'toc' ? '目录页' : '内容页'}）
+          </span>
+          <div id="bqg-picker-badges" style="display:flex;gap:8px;flex-wrap:wrap;">
+            ${types.map(t => `
+              <span class="bqg-picker-badge" data-key="${t.key}" title="${t.desc}">
+                ${t.label}${t.required ? ' <em style="color:#ffb74d;font-style:normal;">*</em>' : ''}
+              </span>`).join('')}
+          </div>
+          <div style="margin-left:auto;display:flex;gap:8px;flex-shrink:0;">
+            <button id="bqg-picker-done"   style="background:#43a047;color:#fff;border:none;padding:7px 18px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">✓ 完成</button>
+            <button id="bqg-picker-cancel" style="background:#e53935;color:#fff;border:none;padding:7px 14px;border-radius:6px;cursor:pointer;font-size:13px;">✗ 取消</button>
+          </div>
+        </div>`;
+      document.body.appendChild(bar);
+      this._toolbar = bar;
+
+      bar.querySelector('#bqg-picker-done').addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.finish();
+      });
+      bar.querySelector('#bqg-picker-cancel').addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.stop();
+        showToast('已取消手动标记', 'info');
+      });
+    },
+
+    // 刷新工具栏 badge 已标记状态
+    _refreshBadges() {
+      if (!this._toolbar) return;
+      const types = this._modeTypes[this._mode] || [];
+      types.forEach(t => {
+        const badge = this._toolbar.querySelector(`.bqg-picker-badge[data-key="${t.key}"]`);
+        if (!badge) return;
+        if (this._picked[t.key]) {
+          badge.classList.add('bqg-picker-badge-done');
+          badge.title = `已选: ${this._picked[t.key]}`;
+        } else {
+          badge.classList.remove('bqg-picker-badge-done');
+        }
+      });
+    },
+
+    // 绑定全局鼠标监听
+    _bindEvents() {
+      this._onMouseMove = (e) => {
+        const target = e.target;
+        if (!target) return;
+        if (target.closest('#bqg-picker-toolbar') || target.closest('#bqg-picker-menu')) return;
+        this._clearHighlight();
+        target.classList.add('bqg-picker-highlight');
+        this._highlight = target;
+      };
+      this._onMouseClick = (e) => {
+        const target = e.target;
+        if (!target) return;
+        if (target.closest('#bqg-picker-toolbar') || target.closest('#bqg-picker-menu')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this._showMenu(target, e.clientX, e.clientY);
+      };
+      document.addEventListener('mouseover', this._onMouseMove, true);
+      document.addEventListener('click',     this._onMouseClick, true);
+    },
+
+    _removeMouseListeners() {
+      if (this._onMouseMove)  document.removeEventListener('mouseover', this._onMouseMove,  true);
+      if (this._onMouseClick) document.removeEventListener('click',     this._onMouseClick, true);
+    },
+
+    _clearHighlight() {
+      if (this._highlight) {
+        this._highlight.classList.remove('bqg-picker-highlight');
+        this._highlight = null;
+      }
+    },
+
+    // 显示气泡类型选择菜单
+    _showMenu(el, cx, cy) {
+      if (this._menu) { this._menu.remove(); this._menu = null; }
+      const types = this._modeTypes[this._mode] || [];
+      const sel = this.generateSelector(el);
+
+      const menu = document.createElement('div');
+      menu.id = 'bqg-picker-menu';
+      menu.innerHTML = `
+        <div style="font-size:11px;color:#999;margin-bottom:8px;word-break:break-all;">
+          <code style="background:#f5f5f5;padding:2px 6px;border-radius:4px;font-size:11px;">${sel}</code>
+        </div>
+        <div style="font-size:12px;color:#666;margin-bottom:10px;">请选择此元素的类型：</div>
+        ${types.map(t => {
+          const done = this._picked[t.key] ? '✓ ' : '';
+          return `<div class="bqg-picker-menu-item ${this._picked[t.key] ? 'bqg-picker-menu-done' : ''}"
+            data-key="${t.key}" title="${t.desc}">${done}${t.label}</div>`;
+        }).join('')}
+        <div class="bqg-picker-menu-item bqg-picker-menu-cancel">✗ 不标记</div>`;
+      document.body.appendChild(menu);
+      this._menu = menu;
+
+      // 先设初始位置，渲染后修正溢出
+      menu.style.left = (cx + 8) + 'px';
+      menu.style.top  = (cy + 8) + 'px';
+      requestAnimationFrame(() => {
+        if (!this._menu) return;
+        const mw = menu.offsetWidth, mh = menu.offsetHeight;
+        const vw = window.innerWidth,  vh = window.innerHeight;
+        let mx = cx + 8, my = cy + 8;
+        if (mx + mw > vw - 10) mx = cx - mw - 8;
+        if (my + mh > vh - 10) my = cy - mh - 8;
+        menu.style.left = Math.max(4, mx) + 'px';
+        menu.style.top  = Math.max(4, my) + 'px';
+      });
+
+      // 点击菜单项
+      menu.addEventListener('click', (e) => {
+        const item = e.target.closest('.bqg-picker-menu-item');
+        if (!item) return;
+        e.stopPropagation();
+        if (item.classList.contains('bqg-picker-menu-cancel')) {
+          menu.remove(); this._menu = null;
+          return;
+        }
+        const key = item.dataset.key;
+        const typeInfo = types.find(t => t.key === key);
+        this._picked[key] = sel;
+
+        // 标记目录容器时，自动推导章节链接选择器
+        if (key === 'toc') {
+          const tocEl = document.querySelector(sel);
+          if (tocEl) {
+            const links = tocEl.querySelectorAll('a[href]');
+            if (links.length > 0) {
+              const parentTag = links[0].parentElement.tagName.toLowerCase();
+              const chapSel = parentTag === 'dd' ? 'dl dd > a[href]' :
+                              parentTag === 'li' ? 'ul > li > a[href]' :
+                              `${sel} a[href]`;
+              this._picked['chapters'] = chapSel;
+              showToast(
+                `📋 目录容器已标记（发现 ${links.length} 个章节链接）\n自动推导章节选择器: ${chapSel}`,
+                'success', 3500
+              );
+            } else {
+              showToast(`📋 目录容器已标记，但未发现链接，请确认选择器`, 'warn', 3000);
+            }
+          }
+        } else {
+          showToast(`${typeInfo ? typeInfo.label : key} 已标记\n选择器: ${sel}`, 'success', 2500);
+        }
+
+        // 保持绿色边框提示用户已标记
+        el.classList.remove('bqg-picker-highlight');
+        el.classList.add('bqg-picker-marked');
+        menu.remove(); this._menu = null;
+        this._refreshBadges();
+      });
+
+      // 点击菜单外部关闭
+      const outsideClick = (e) => {
+        if (this._menu && !this._menu.contains(e.target)) {
+          this._menu.remove(); this._menu = null;
+          document.removeEventListener('click', outsideClick, true);
+        }
+      };
+      setTimeout(() => document.addEventListener('click', outsideClick, true), 20);
+    },
+
+    // 完成标记：校验 → 组装规则 → 保存
+    finish() {
+      const types = this._modeTypes[this._mode] || [];
+      const missing = types.filter(t => t.required && !this._picked[t.key]).map(t => t.label);
+      if (missing.length > 0) {
+        showToast(`⚠️ 请先标记必选项：${missing.join('、')}`, 'warn', 3500);
+        return;
+      }
+
+      let rule;
+      if (this._mode === 'toc') {
+        rule = {
+          name:     window.location.hostname,
+          toc:      this._picked.toc,
+          chapters: this._picked.chapters || (this._picked.toc + ' a[href]'),
+          content:  ['div#content', '#chaptercontent', '.content'],
+          title:    this._picked.title,
+          bookInfo: this._picked.bookInfo || ''
+        };
+      } else {
+        // 内容页规则：复用已有目录规则中的 toc/chapters/title
+        const base = currentSiteSelector || {};
+        rule = {
+          name:     window.location.hostname,
+          toc:      base.toc      || '',
+          chapters: base.chapters || '',
+          title:    base.title    || 'h1',
+          bookInfo: base.bookInfo || '',
+          content:  [this._picked.content],
+          nextPage: this._picked.nextPage || ''
+        };
+      }
+
+      if (SiteRuleManager.addRule(rule)) {
+        // 立即让本次下载生效
+        currentSiteSelector = { ...rule, custom: true };
+        this.stop();
+        showToast(`✅ 规则已保存并立即生效！`, 'success', 3500);
+        if (this._onComplete) this._onComplete(rule);
+      } else {
+        showToast('保存规则失败，请查看控制台（F12）', 'error');
+      }
+    }
+  };
+
   // 内容检测系统
   const ContentDetector = {
     // Simhash算法：检测重复内容
@@ -1417,6 +1735,82 @@
         .bqg-toast.error   { background: #e53935; }
         .bqg-toast.info    { background: #1976d2; }
         .bqg-toast.warn    { background: #f57c00; }
+
+        /* =============================================================
+           手动标记器 ElementPicker
+           ============================================================= */
+        html.bqg-picker-mode * {
+            cursor: crosshair !important;
+        }
+        .bqg-picker-highlight {
+            outline: 2px dashed #667eea !important;
+            outline-offset: 2px !important;
+            background: rgba(102, 126, 234, 0.07) !important;
+        }
+        .bqg-picker-marked {
+            outline: 2px solid #43a047 !important;
+            outline-offset: 2px !important;
+            background: rgba(67, 160, 71, 0.07) !important;
+        }
+        #bqg-picker-toolbar {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            z-index: 2147483647 !important;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+            padding: 10px 20px !important;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.3) !important;
+            box-sizing: border-box !important;
+        }
+        .bqg-picker-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            background: rgba(255,255,255,0.18);
+            color: #fff;
+            border-radius: 20px;
+            font-size: 12px;
+            border: 1px solid rgba(255,255,255,0.3);
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+        .bqg-picker-badge-done {
+            background: rgba(67, 160, 71, 0.8) !important;
+            border-color: #a5d6a7 !important;
+        }
+        #bqg-picker-menu {
+            position: fixed !important;
+            z-index: 2147483646 !important;
+            background: #fff !important;
+            border-radius: 10px !important;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.22) !important;
+            padding: 12px !important;
+            min-width: 200px !important;
+            max-width: 320px !important;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+        }
+        .bqg-picker-menu-item {
+            padding: 8px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #333 !important;
+            margin-bottom: 4px;
+            transition: background 0.15s;
+        }
+        .bqg-picker-menu-item:hover {
+            background: #f0f4ff;
+        }
+        .bqg-picker-menu-done {
+            color: #43a047 !important;
+            font-weight: 600;
+        }
+        .bqg-picker-menu-cancel {
+            color: #e53935 !important;
+            border-top: 1px solid #f0f0f0;
+            margin-top: 4px;
+            padding-top: 10px;
+        }
     `);
 
   // Toast 通知（自动消失，无需点击）
@@ -1471,6 +1865,10 @@
             <div style="display:flex; gap:10px; margin:10px 24px;">
                 <button id="analyzeTocButton" style="flex:1; background:linear-gradient(135deg, #ff9800 0%, #ff6f00 100%); color:white; padding:10px; border-radius:8px;">🔍 分析章节规则</button>
                 <button id="analyzeContentButton" style="flex:1; background:linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%); color:white; padding:10px; border-radius:8px;">🔧 分析内容规则</button>
+            </div>
+            <div style="display:flex; gap:10px; margin:10px 24px;">
+                <button id="pickTocButton" style="flex:1; background:linear-gradient(135deg, #26c6da 0%, #0097a7 100%); color:white; padding:10px; border-radius:8px;">🎯 手动标记目录页</button>
+                <button id="pickContentButton" style="flex:1; background:linear-gradient(135deg, #ef5350 0%, #c62828 100%); color:white; padding:10px; border-radius:8px;">🎯 手动标记内容页</button>
             </div>
             <button id="fetchContentButton">开始下载</button>
             <div id="fetchContentProgress">
@@ -1643,6 +2041,10 @@
   const applyRuleButton = document.getElementById('applyRuleButton');
   const exportAnalyzedRuleButton = document.getElementById('exportAnalyzedRuleButton');
   const closeAnalyzerButton = document.getElementById('closeAnalyzerButton');
+
+  // 手动标记按钮
+  const pickTocButton     = document.getElementById('pickTocButton');
+  const pickContentButton = document.getElementById('pickContentButton');
   
   // 清洗规则管理元素
   const manageCleanRulesButton = document.getElementById('manageCleanRulesButton');
@@ -1735,6 +2137,7 @@
       return selector;
     }
     console.warn('[站点检测] 未匹配到已知站点，使用默认策略');
+    showToast('⚠️ 未能识别当前站点，建议使用「🎯 手动标记」功能设置规则', 'warn', 4500);
     return SITE_SELECTORS[0]; // 默认使用第一个
   }
 
@@ -2233,7 +2636,26 @@
   
   analyzerModalClose.addEventListener('click', () => ruleAnalyzerModal.style.display = 'none');
   closeAnalyzerButton.addEventListener('click', () => ruleAnalyzerModal.style.display = 'none');
-  
+
+  // === 手动标记功能 ===
+  pickTocButton.addEventListener('click', () => {
+    // 关闭主 modal，进入标记模式
+    modal.style.display = 'none';
+    ElementPicker.start('toc', (rule) => {
+      // 完成后重新打开主 modal
+      modal.style.display = 'flex';
+      showToast('✅ 目录页规则已保存，已自动应用至本次下载', 'success', 3000);
+    });
+  });
+
+  pickContentButton.addEventListener('click', () => {
+    modal.style.display = 'none';
+    ElementPicker.start('content', (rule) => {
+      modal.style.display = 'flex';
+      showToast('✅ 内容页规则已保存，下载章节时将自动使用新规则', 'success', 3000);
+    });
+  });
+
   applyRuleButton.addEventListener('click', () => {
     const rule = RuleAnalyzer.getEditedRule();
     
