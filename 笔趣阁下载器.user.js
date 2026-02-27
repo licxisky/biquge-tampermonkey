@@ -456,6 +456,16 @@
         confidence: 'low'
       };
 
+      // 辅助函数：检查链接是否指向有效的下一页（过滤JavaScript URL）
+      const isValidNextPageLink = (link) => {
+        if (!link || !link.href) return false;
+        // 过滤 JavaScript URL 和锚点
+        if (link.href.startsWith('javascript:') || link.href.startsWith('#')) {
+          return false;
+        }
+        return true;
+      };
+
       // 1. 尝试常见的下一页选择器
       const commonSelectors = [
         'a.next-page',
@@ -480,7 +490,7 @@
             const text = selector.match(/"([^"]+)"/)[1];
             const links = document.querySelectorAll('a');
             for (const link of links) {
-              if (link.innerText.trim() === text) {
+              if (link.innerText.trim() === text && isValidNextPageLink(link)) {
                 result.nextPageSelector = `a:has-text("${text}")`;
                 result.hasNextPage = true;
                 result.confidence = 'high';
@@ -491,7 +501,7 @@
             if (result.hasNextPage) break;
           } else {
             const el = document.querySelector(selector);
-            if (el) {
+            if (el && isValidNextPageLink(el)) {
               result.nextPageSelector = selector;
               result.hasNextPage = true;
               result.confidence = 'high';
@@ -527,10 +537,13 @@
         for (const link of allLinks) {
           const text = link.innerText.trim().toLowerCase();
           if (nextPagePatterns.some(pattern => text.includes(pattern.toLowerCase()))) {
-            result.nextPagePattern = link.innerText.trim();
-            result.hasNextPage = true;
-            result.confidence = 'medium';
-            break;
+            // 检查链接是否有效
+            if (isValidNextPageLink(link)) {
+              result.nextPagePattern = link.innerText.trim();
+              result.hasNextPage = true;
+              result.confidence = 'medium';
+              break;
+            }
           }
         }
       }
@@ -2695,26 +2708,67 @@
    * 检测是否需要分页加载
    */
   function detectPaginationNeeded(siteConfig) {
+    // 辅助函数：检查链接是否指向有效的下一页
+    const hasValidNextPage = (selector) => {
+      const nextEl = document.querySelector(selector);
+      if (!nextEl || !nextEl.href) return false;
+      // 过滤 JavaScript URL 和锚点
+      if (nextEl.href.startsWith('javascript:') || nextEl.href.startsWith('#')) {
+        return false;
+      }
+      return true;
+    };
+
     // 1. 优先使用站点配置
     if (siteConfig.tocNextPage) {
-      const nextEl = document.querySelector(siteConfig.tocNextPage);
-      if (nextEl) return true;
+      if (hasValidNextPage(siteConfig.tocNextPage)) return true;
     }
 
     // 2. 使用自动检测
     const paginationInfo = RuleAnalyzer.detectTocPagination();
-    return paginationInfo.hasNextPage;
+    if (paginationInfo.hasNextPage) {
+      // 如果配置了选择器，检查链接是否有效
+      if (paginationInfo.nextPageSelector) {
+        if (hasValidNextPage(paginationInfo.nextPageSelector)) return true;
+      } else {
+        // 只有文本匹配，假设有效
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
    * 查找下一页URL
    */
+  /**
+   * 检查URL是否有效（过滤JavaScript URL等无效链接）
+   */
+  function isValidNextPageUrl(href) {
+    if (!href) return false;
+    // 过滤 JavaScript URL 和其他无效协议
+    if (href.startsWith('javascript:') || href.startsWith('#')) {
+      return false;
+    }
+    return true;
+  }
+
   async function findNextPageUrl(currentDoc, siteConfig, currentUrl) {
+    // 辅助函数：处理并验证URL
+    const processUrl = (href) => {
+      if (!isValidNextPageUrl(href)) {
+        return null;
+      }
+      return href.startsWith('http') ? href : new URL(href, currentUrl).href;
+    };
+
     // 1. 优先使用配置的选择器
     if (siteConfig.tocNextPage) {
       const nextEl = currentDoc.querySelector(siteConfig.tocNextPage);
       if (nextEl && nextEl.href) {
-        return nextEl.href.startsWith('http') ? nextEl.href : new URL(nextEl.href, currentUrl).href;
+        const url = processUrl(nextEl.href);
+        if (url) return url;
       }
     }
 
@@ -2723,7 +2777,8 @@
       const allLinks = currentDoc.querySelectorAll('a');
       for (const link of allLinks) {
         if (link.innerText.trim() === siteConfig.tocNextPagePattern) {
-          return link.href.startsWith('http') ? link.href : new URL(link.href, currentUrl).href;
+          const url = processUrl(link.href);
+          if (url) return url;
         }
       }
     }
@@ -2734,7 +2789,8 @@
       if (paginationInfo.nextPageSelector && !paginationInfo.nextPageSelector.includes(':has-text')) {
         const nextEl = currentDoc.querySelector(paginationInfo.nextPageSelector);
         if (nextEl && nextEl.href) {
-          return nextEl.href.startsWith('http') ? nextEl.href : new URL(nextEl.href, currentUrl).href;
+          const url = processUrl(nextEl.href);
+          if (url) return url;
         }
       }
 
@@ -2744,7 +2800,8 @@
         for (const link of allLinks) {
           if (link.innerText.trim() === paginationInfo.nextPagePattern ||
             link.innerText.trim().toLowerCase().includes(paginationInfo.nextPagePattern.toLowerCase())) {
-            return link.href.startsWith('http') ? link.href : new URL(link.href, currentUrl).href;
+            const url = processUrl(link.href);
+            if (url) return url;
           }
         }
       }
