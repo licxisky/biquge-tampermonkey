@@ -3875,56 +3875,75 @@
   // 重试失败章节按钮事件
   retryFailedButton.addEventListener('click', async () => {
     if (failedChapters.length === 0) return;
-    
+
     retryFailedButton.disabled = true;
     retryFailedButton.innerText = '重试中...';
+
+    // 保存当前进度条状态（百分比、宽度、颜色样式）
+    const savedProgressText = progressBar.textContent;
+    const savedProgressWidth = progressBar.style.width;
+    const savedProgressClasses = progressBar.className;
+
+    // 重试时清除警告和错误样式，但保持其他状态
     progressBar.classList.remove('progress-warning', 'progress-error');
-    
+
     const retryTasks = failedChapters.map(failed => {
       const chapterIndex = failed.index - startIndex - 1; // 转换为相对索引
-      return { 
-        link: selectedLinks[chapterIndex], 
+      return {
+        link: selectedLinks[chapterIndex],
         index: chapterIndex,
         originalIndex: failed.index
       };
     });
-    
+
     let retryCompleted = 0;
     const retryTotal = retryTasks.length;
     const newFailures = [];
-    
+
     // 重试失败章节
     for (const task of retryTasks) {
       try {
         const url = task.link.href;
         results[task.index] = await fetchContent(url, task.link);
         retryCompleted++;
-        progressBar.textContent = `重试中: ${retryCompleted}/${retryTotal}`;
+        // 只显示重试进度，不影响主进度条百分比
+        progressBar.textContent = `🔄 重试中: ${retryCompleted}/${retryTotal}`;
       } catch (error) {
-        newFailures.push({ 
-          index: task.originalIndex, 
-          title: task.link.innerText, 
-          error: error.message 
+        newFailures.push({
+          index: task.originalIndex,
+          title: task.link.innerText,
+          error: error.message
         });
       }
     }
-    
+
     // 更新失败列表
     failedChapters = newFailures;
-    
+
     if (failedChapters.length === 0) {
       failedChaptersInfo.style.display = 'none';
       showToast('✅ 所有失败章节重试成功');
     } else {
-      failedChaptersList.innerHTML = failedChapters.map(f => 
+      failedChaptersList.innerHTML = failedChapters.map(f =>
         `<div style="margin:3px 0;">第${f.index}章: ${f.title}<br><span style="font-size:11px; color:#666;">错误: ${f.error}</span></div>`
       ).join('');
       showToast(`重试完成：${retryCompleted - failedChapters.length}/${retryTotal} 章成功，${failedChapters.length} 章仍然失败`, 'warn', 4000);
     }
-    
+
     // 重新生成下载文件（使用公共函数）
     generateDownloadFile();
-    
+
+    // 恢复进度条原始状态（不影响主下载进度显示）
+    progressBar.textContent = savedProgressText;
+    progressBar.style.width = savedProgressWidth;
+    // 如果之前有警告或错误样式，且现在还有失败章节，则恢复样式
+    if (failedChapters.length > 0 && (savedProgressClasses.includes('progress-warning') || savedProgressClasses.includes('progress-error'))) {
+      progressBar.className = savedProgressClasses;
+    } else if (failedChapters.length === 0) {
+      // 全部成功，清除警告和错误样式
+      progressBar.classList.remove('progress-warning', 'progress-error');
+    }
+
     retryFailedButton.disabled = false;
     retryFailedButton.innerText = '重试失败章节';
   });
