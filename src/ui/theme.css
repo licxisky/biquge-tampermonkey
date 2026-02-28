@@ -1,0 +1,767 @@
+/* UI 主题样式模块 */
+/* 功能：集中管理所有 CSS 样式 */
+
+/* ========== 布局常量 ========== */
+/* 左右边距：24px，左右总边距：48px */
+
+/* ========== 弹窗基础样式 ========== */
+
+#fetchContentModal, #configModal, #ruleModal, #cleanRuleModal, #analyzerModal, #previewModal {
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 0;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+  z-index: 10000;
+  width: 520px;
+  max-height: 90vh;
+  overflow: hidden;
+  animation: modalFadeIn 0.3s ease-out;
+}
+
+@keyframes modalFadeIn {
+  from { opacity: 0; transform: translate(-50%, -48%); }
+  to { opacity: 1; transform: translate(-50%, -50%); }
+}
+
+/* 弹窗特定宽度 */
+#configModal { width: 460px; }
+#ruleModal { width: 600px; }
+#cleanRuleModal { width: 700px; }
+#analyzerModal { width: 650px; }
+#previewModal { width: 600px; }
+
+/* 弹窗内容区域背景 */
+#fetchContentModal::after, #configModal::after, #ruleModal::after,
+#cleanRuleModal::after, #analyzerModal::after, #previewModal::after {
+  content: '';
+  position: absolute;
+  top: 60px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: white;
+  border-radius: 0 0 16px 16px;
+  z-index: -1;
+}
+
+/* 弹窗标题 */
+#fetchContentModal h3, #configModal h3, #ruleModal h3,
+#cleanRuleModal h3, #analyzerModal h3, #previewModal h3 {
+  margin: 0;
+  padding: 20px 24px;
+  font-size: 18px;
+  font-weight: 600;
+  color: white;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  flex-shrink: 0;
+}
+
+/* 弹窗主体内容区 */
+.modal-body {
+  padding: 20px 24px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+/* 防止内容溢出 */
+.modal-body * {
+  box-sizing: border-box;
+}
+
+/* ========== 全局对齐容器 ========== */
+/* 使用 .modal-content-wrapper 包裹需要对齐的内容，确保左右边距一致 */
+.modal-body > div[style*="margin"],
+.modal-body > label,
+.modal-body > button,
+.modal-body > table {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+/* 关闭按钮 */
+#fetcModalClose, #configModalClose, #ruleModalClose, #cleanRuleModalClose, #analyzerModalClose, #previewModalClose {
+  cursor: pointer;
+  float: right;
+  margin: -2px 8px 0 0;
+  width: 28px;
+  height: 28px;
+  line-height: 28px;
+  text-align: center;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+#fetcModalClose:hover, #configModalClose:hover, #ruleModalClose:hover,
+#cleanRuleModalClose:hover, #analyzerModalClose:hover, #previewModalClose:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: rotate(90deg);
+}
+
+/* 设置按钮 */
+#configBtn {
+  cursor: pointer;
+  float: right;
+  margin: -2px 8px 0 0;
+  width: 32px;
+  height: 28px;
+  line-height: 28px;
+  text-align: center;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+#configBtn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ========== 表单元素样式 ========== */
+
+label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: #333;
+  font-weight: 500;
+}
+
+input[type="text"],
+input[type="number"],
+select {
+  width: 100%;
+  max-width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  box-sizing: border-box;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  background: white;
+}
+
+/* 隐藏数字输入框的上下箭头 */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+
+small {
+  font-size: 12px;
+  color: #999;
+  margin-left: 4px;
+}
+
+/* ========== 按钮样式 ========== */
+
+button {
+  border: none;
+  padding: 12px 24px;
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-family: inherit;
+}
+
+button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+button:active {
+  transform: translateY(0);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 主要按钮 - 渐变紫色 */
+#fetchContentButton, #saveConfigButton {
+  width: 100%;
+  margin: 15px 0;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+#fetchContentButton:hover, #saveConfigButton:hover {
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+}
+
+/* ========== 配置项样式 ========== */
+
+.config-item {
+  margin: 18px 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.config-item label {
+  display: inline-block;
+  width: 120px;
+  flex-shrink: 0;
+  font-weight: 500;
+  color: #333;
+  text-align: left;
+}
+
+.config-item input[type="number"] {
+  width: 70px;
+  padding: 8px 12px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 14px;
+  text-align: center;
+  transition: all 0.3s ease;
+  background: white;
+  flex-shrink: 0;
+}
+
+.config-item input[type="number"]:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.config-item small {
+  color: #999;
+  margin-left: 8px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* ========== 按钮组容器 ========== */
+/* 用于多个按钮并排的情况，确保左右对齐 */
+.button-group {
+  display: flex;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.button-group > button {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 4个按钮的按钮组 */
+.button-group-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.button-group-4 > button {
+  min-width: 0;
+}
+
+/* ========== 标题选择器组 ========== */
+.title-selector-group {
+  margin: 10px 0;
+  padding: 12px;
+  background: rgba(102, 126, 234, 0.05);
+  border-radius: 8px;
+}
+
+.title-selector-label {
+  font-size: 12px;
+  color: #667eea;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.title-selector-group select {
+  margin-bottom: 12px;
+}
+
+.title-selector-group input[type="text"] {
+  margin-bottom: 0;
+}
+
+/* ========== 分隔线 ========== */
+.section-divider {
+  border-top: 1px solid #e0e0e0;
+  padding-top: 16px;
+  margin-top: 16px;
+}
+
+.config-item-border {
+  border-top: 1px solid #e0e0e0;
+  padding-top: 16px;
+  margin-top: 16px;
+}
+
+/* ========== 标签样式 ========== */
+.label-orange {
+  color: #ff6f00;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #555;
+}
+
+.checkbox-label input[type="checkbox"] {
+  margin-right: 8px;
+}
+
+/* ========== 缓存按钮网格 ========== */
+.cache-buttons-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+/* ========== 提示框 ========== */
+.tip-box {
+  margin-bottom: 15px;
+  padding: 12px;
+  background: #fff3cd;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #856404;
+}
+
+/* ========== 检测结果 ========== */
+.detection-title {
+  font-size: 12px;
+  color: #ff6f00;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.failed-title {
+  font-weight: bold;
+  margin-bottom: 5px;
+  color: #856404;
+}
+
+/* ========== 按钮变体 ========== */
+.button-gray {
+  background: #e0e0e0;
+  color: #666;
+}
+
+/* ========== 管理按钮样式 ========== */
+#manageCleanRulesButton {
+  width: 100%;
+  margin: 0 0 15px 0;
+  background: linear-gradient(135deg, #ff9800 0%, #ff6f00 100%);
+  color: white;
+  padding: 12px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+
+/* ========== 下载按钮组 ========== */
+#previewButton, #ruleManageButton {
+  flex: 1;
+  min-width: 0;
+  color: white;
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 14px;
+  transition: all 0.3s ease;
+}
+
+#previewButton {
+  background: linear-gradient(135deg, #4fc3f7 0%, #29b6f6 100%);
+}
+
+#ruleManageButton {
+  background: linear-gradient(135deg, #66bb6a 0%, #43a047 100%);
+}
+
+/* ========== 进度条样式 ========== */
+
+#fetchContentProgress {
+  background: #f0f0f0;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+  margin: 15px 0;
+  display: none;
+  width: 100%;
+}
+
+#fetchContentProgress div {
+  height: 28px;
+  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+  text-align: center;
+  line-height: 28px;
+  color: white;
+  font-size: 13px;
+  font-weight: 600;
+  transition: width 0.3s ease;
+  box-shadow: 0 0 10px rgba(102, 126, 234, 0.5);
+  min-width: 0;
+}
+
+/* ========== 失败章节信息 ========== */
+
+#failedChaptersInfo {
+  margin: 15px 0;
+  padding: 12px;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  text-align: left;
+  max-height: 150px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  width: 100%;
+}
+
+#failedChaptersList {
+  font-size: 13px;
+  color: #856404;
+  margin: 8px 0;
+}
+
+#failedChaptersList div {
+  padding: 4px 0;
+  border-bottom: 1px dashed #e0a800;
+}
+
+#failedChaptersList div:last-child {
+  border-bottom: none;
+}
+
+#retryFailedButton {
+  width: 100%;
+  margin-top: 10px;
+  background: #ffc107;
+  color: #333;
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: none;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+#retryFailedButton:hover {
+  background: #ffb300;
+}
+
+/* ========== 检测结果容器 ========== */
+
+#detectionResultsContainer {
+  margin: 10px 0;
+  padding: 12px;
+  background: rgba(255, 152, 0, 0.1);
+  border-radius: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: none;
+  width: 100%;
+}
+
+#detectionResults {
+  font-size: 12px;
+  color: #666;
+}
+
+/* ========== 隐藏下载链接 ========== */
+
+#_downlink {
+  display: none;
+}
+
+/* ========== Toast 通知 ========== */
+
+@keyframes bqgToastIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.bqg-toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: white;
+  z-index: 99999;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  white-space: pre-line;
+  max-width: 420px;
+  text-align: center;
+  pointer-events: none;
+  animation: bqgToastIn 0.2s ease-out;
+  transition: opacity 0.3s ease;
+}
+
+.bqg-toast.success { background: #43a047; }
+.bqg-toast.error { background: #e53935; }
+.bqg-toast.info { background: #1976d2; }
+.bqg-toast.warn { background: #f57c00; }
+
+/* ========== 元素选择器样式 ========== */
+
+html.bqg-picker-mode * { cursor: crosshair !important; }
+
+.bqg-picker-highlight {
+  outline: 2px dashed #667eea !important;
+  outline-offset: 2px !important;
+  background: rgba(102, 126, 234, 0.07) !important;
+}
+
+.bqg-picker-marked {
+  outline: 2px solid #43a047 !important;
+  outline-offset: 2px !important;
+  background: rgba(67, 160, 71, 0.07) !important;
+}
+
+#bqg-picker-toolbar {
+  position: fixed !important;
+  top: 12px !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 2147483647 !important;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+  padding: 10px 16px 10px 12px !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.35) !important;
+  border-radius: 12px !important;
+  width: max-content !important;
+  max-width: 92vw !important;
+  user-select: none !important;
+  color: white;
+}
+
+#bqg-picker-menu {
+  position: fixed !important;
+  z-index: 2147483646 !important;
+  background: #fff !important;
+  border-radius: 10px !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.22) !important;
+  padding: 12px !important;
+  min-width: 200px !important;
+}
+
+.bqg-picker-menu-item {
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #333 !important;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+}
+
+.bqg-picker-menu-item:hover { background: #f0f4ff; }
+
+.bqg-picker-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  background: rgba(255,255,255,0.18);
+  color: #fff;
+  border-radius: 20px;
+  font-size: 12px;
+  border: 1px solid rgba(255,255,255,0.3);
+}
+
+.bqg-picker-badge-done {
+  background: rgba(67, 160, 71, 0.8) !important;
+  border-color: #a5d6a7 !important;
+}
+
+/* ========== 缓存清除按钮 ========== */
+
+.cache-clear-btn {
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+  color: white;
+  transition: all 0.2s;
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  background: linear-gradient(135deg, #78909c 0%, #546e7a 100%);
+}
+
+.cache-clear-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  background: linear-gradient(135deg, #90a4ae 0%, #607d8b 100%);
+}
+
+.cache-clear-btn[data-type="progress"] {
+  background: linear-gradient(135deg, #42a5f5 0%, #1e88e5 100%);
+}
+
+.cache-clear-btn[data-type="progress"]:hover {
+  background: linear-gradient(135deg, #64b5f6 0%, #2196f3 100%);
+}
+
+.cache-clear-btn[data-type="config"] {
+  background: linear-gradient(135deg, #66bb6a 0%, #43a047 100%);
+}
+
+.cache-clear-btn[data-type="config"]:hover {
+  background: linear-gradient(135deg, #81c784 0%, #4caf50 100%);
+}
+
+.cache-clear-btn[data-type="rules"] {
+  background: linear-gradient(135deg, #ffa726 0%, #fb8c00 100%);
+}
+
+.cache-clear-btn[data-type="rules"]:hover {
+  background: linear-gradient(135deg, #ffb74d 0%, #ffa726 100%);
+}
+
+.cache-clear-btn[data-type="sites"] {
+  background: linear-gradient(135deg, #ab47bc 0%, #8e24aa 100%);
+}
+
+.cache-clear-btn[data-type="sites"]:hover {
+  background: linear-gradient(135deg, #ba68c8 0%, #9c27b0 100%);
+}
+
+#clearAllCacheButton {
+  width: 100%;
+  margin: 10px 0;
+  padding: 12px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* ========== 章节范围表格 ========== */
+
+table {
+  width: 100%;
+  margin: 0 0 20px 0;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+table th, table td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #666;
+  font-size: 13px;
+  padding: 0;
+}
+
+table input[type="number"] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* ========== 书名信息 ========== */
+
+#_book_info {
+  margin: 0 0 15px 0;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.08) 100%);
+  border-radius: 8px;
+  font-weight: 500;
+  color: #667eea;
+  font-size: 14px;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* ========== 规则列表样式 ========== */
+
+#rulesList, #cleanRulesList {
+  padding: 0;
+  overflow-x: hidden;
+}
+
+#rulesList > div, #cleanRulesList > div {
+  margin-bottom: 12px;
+  padding: 12px;
+  background: #f9f9f9;
+  border-radius: 8px;
+  overflow: hidden;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+#rulesList:empty::before, #cleanRulesList:empty::before {
+  content: "暂无规则";
+  display: block;
+  text-align: center;
+  color: #999;
+  padding: 20px;
+}
+
+/* ========== 预览内容 ========== */
+
+#previewContent {
+  max-height: 50vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  line-height: 1.8;
+  font-size: 14px;
+  color: #333;
+}
+
+/* ========== 规则分析器内容 ========== */
+
+#analyzerContent {
+  max-height: 50vh;
+  overflow-y: auto;
+  font-size: 13px;
+  color: #666;
+  line-height: 1.8;
+}
+
+#analyzerContent code {
+  background: #f0f0f0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+}
