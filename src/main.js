@@ -156,29 +156,67 @@ import { SITE_SELECTORS } from './data/site-selectors.js';
 
   // 添加下载单章按钮到内容页
   function addChapterDownloadButton() {
-    // 检测是否为章节页（有内容区域的页面）
-    const currentSite = detectSiteStructure();
-    if (!currentSite) return false;
-
-    // 获取内容选择器
-    const contentSelectors = currentSite.content || [];
-    if (!contentSelectors.length) return false;
-
-    // 检查是否存在内容元素
-    let contentElement = null;
-    for (const selector of contentSelectors) {
-      contentElement = document.querySelector(selector);
-      if (contentElement) break;
-    }
-
-    // 如果没有找到内容元素，说明不是章节页
-    if (!contentElement) return false;
-
     // 检查是否已经在目录页（目录页不应该显示单章下载按钮）
     if (document.querySelector('button#downloadMenuBtn')) return false;
 
     // 防止重复添加按钮
     if (document.querySelector('button#downloadChapterBtn')) return false;
+
+    // 检测当前站点
+    let currentSite = null;
+
+    // 1. 先尝试 hostname 匹配（针对 pixiv 等特殊站点）
+    const currentHostname = window.location.hostname;
+    const getMainDomain = (hostname) => hostname.replace(/^www\./, '');
+
+    for (const selector of SITE_SELECTORS) {
+      if (selector.hostname) {
+        const hostnameMatch = selector.hostname === currentHostname ||
+                               getMainDomain(selector.hostname) === getMainDomain(currentHostname);
+        if (hostnameMatch) {
+          currentSite = selector;
+          console.log(`[章节页按钮] 通过 hostname 匹配到站点: ${selector.name}`);
+          break;
+        }
+      }
+    }
+
+    // 2. 如果 hostname 匹配失败，使用常规检测
+    if (!currentSite) {
+      currentSite = detectSiteStructure();
+      if (!currentSite) {
+        console.log('[章节页按钮] 站点检测失败');
+        return false;
+      }
+    }
+
+    // 获取内容选择器
+    const contentSelectors = currentSite.content || [];
+    if (!contentSelectors.length) {
+      console.log('[章节页按钮] 没有内容选择器');
+      return false;
+    }
+
+    // 检查是否存在内容元素
+    let contentElement = null;
+    for (const selector of contentSelectors) {
+      const el = document.querySelector(selector);
+      if (el) {
+        // 检查内容长度，确保是真正的章节内容
+        const textLength = el.innerText.trim().length;
+        console.log(`[章节页按钮] 选择器 "${selector}": 找到元素，内容长度=${textLength}`);
+        if (textLength > 50) {
+          contentElement = el;
+          break;
+        }
+      }
+    }
+
+    // 如果没有找到内容元素，说明不是章节页
+    if (!contentElement) {
+      console.log('[章节页按钮] 未找到有效内容元素');
+      return false;
+    }
 
     // 查找合适的标题元素来放置按钮
     const h1Candidates = Array.from(document.querySelectorAll("h1, h2"));
