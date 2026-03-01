@@ -94,7 +94,7 @@ export const SITE_SELECTORS = [
     toc: 'body',
     tocPattern: 'pixiv',
     chapters: 'main section',
-    content: ['main section', 'section', 'article'],
+    content: ['main section', 'section', 'article', '[class*="body"]'],
     title: 'h1',
     bookInfo: 'h1',
     isSinglePage: true

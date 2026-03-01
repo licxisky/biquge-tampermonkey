@@ -200,7 +200,7 @@
       toc: 'body',
       tocPattern: 'pixiv',
       chapters: 'main section',
-      content: ['main section', 'section', 'article'],
+      content: ['main section', 'section', 'article', '[class*="body"]'],
       title: 'h1',
       bookInfo: 'h1',
       isSinglePage: true
@@ -1694,6 +1694,41 @@
             console.log(`✅ 使用通用选择器找到内容: ${selector}`);
             break;
           }
+        }
+      }
+
+      // 对于动态渲染站点（如 pixiv），添加等待重试机制
+      if (!contentDiv) {
+        console.log('⏳ 首次查找失败，等待页面渲染...');
+        const maxRetries = 3;
+        const retryDelay = 1000; // 1秒
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+
+          // 重试站点配置选择器
+          for (const selector of siteConfig.content) {
+            const el = document.querySelector(selector);
+            if (el && el.innerText.trim().length > 50) {
+              contentDiv = el;
+              console.log(`✅ 重试 ${attempt}/${maxRetries}：找到内容容器 (${selector})`);
+              break;
+            }
+          }
+
+          if (contentDiv) break;
+
+          // 重试通用选择器
+          for (const selector of ['div#content', '#chaptercontent', '.content', '#BookText', '.chapter-content', 'article', '.text-content', '.book-content']) {
+            const el = document.querySelector(selector);
+            if (el && el.innerText.trim().length > 100) {
+              contentDiv = el;
+              console.log(`✅ 重试 ${attempt}/${maxRetries}：使用通用选择器找到内容 (${selector})`);
+              break;
+            }
+          }
+
+          if (contentDiv) break;
         }
       }
 
@@ -4126,5 +4161,5 @@ table input[type="number"] {
 
 })();
 
-// 生成时间: 2026/3/2 00:10:18
+// 生成时间: 2026/3/2 00:14:33
 //# sourceMappingURL=笔趣阁下载器.user.js.map

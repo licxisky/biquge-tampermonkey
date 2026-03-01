@@ -51,6 +51,41 @@ export const DownloadOrchestrator = {
       }
     }
 
+    // 对于动态渲染站点（如 pixiv），添加等待重试机制
+    if (!contentDiv) {
+      console.log('⏳ 首次查找失败，等待页面渲染...');
+      const maxRetries = 3;
+      const retryDelay = 1000; // 1秒
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+
+        // 重试站点配置选择器
+        for (const selector of siteConfig.content) {
+          const el = document.querySelector(selector);
+          if (el && el.innerText.trim().length > 50) {
+            contentDiv = el;
+            console.log(`✅ 重试 ${attempt}/${maxRetries}：找到内容容器 (${selector})`);
+            break;
+          }
+        }
+
+        if (contentDiv) break;
+
+        // 重试通用选择器
+        for (const selector of ['div#content', '#chaptercontent', '.content', '#BookText', '.chapter-content', 'article', '.text-content', '.book-content']) {
+          const el = document.querySelector(selector);
+          if (el && el.innerText.trim().length > 100) {
+            contentDiv = el;
+            console.log(`✅ 重试 ${attempt}/${maxRetries}：使用通用选择器找到内容 (${selector})`);
+            break;
+          }
+        }
+
+        if (contentDiv) break;
+      }
+    }
+
     if (!contentDiv) {
       console.error('❌ [单章下载] 未找到内容元素');
       showToast('❌ 未找到章节内容元素', 'error');
