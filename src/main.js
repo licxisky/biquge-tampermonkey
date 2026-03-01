@@ -74,6 +74,8 @@ import { SITE_SELECTORS } from './data/site-selectors.js';
     addDownloadButton();
     // 添加章节页下载按钮
     addChapterDownloadButton();
+    // 添加固定浮动下载按钮
+    addFloatingDownloadButton();
   }
 
   // 添加下载按钮到目录页
@@ -261,6 +263,60 @@ import { SITE_SELECTORS } from './data/site-selectors.js';
     }
 
     console.log('✅ [章节页] 已添加下载单章按钮');
+    return true;
+  }
+
+  // 添加固定浮动下载按钮
+  function addFloatingDownloadButton() {
+    // 防止重复添加
+    if (document.querySelector('#bqg-floating-download-btn')) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'bqg-floating-download-btn';
+    btn.innerHTML = '📖<br><span style="font-size:10px;">下载</span>';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 80px;
+      right: 20px;
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+      z-index: 99998;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      line-height: 1.2;
+      transition: all 0.3s ease;
+      user-select: none;
+    `.replace(/\s+/g, ' ').trim();
+
+    // 悬停效果
+    btn.addEventListener('mouseenter', () => {
+      btn.style.transform = 'scale(1.1)';
+      btn.style.boxShadow = '0 6px 20px rgba(102, 126, 234, 0.6)';
+    });
+
+    btn.addEventListener('mouseleave', () => {
+      btn.style.transform = 'scale(1)';
+      btn.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.4)';
+    });
+
+    // 点击事件
+    btn.addEventListener('click', () => {
+      DownloadOrchestrator.downloadCurrentChapter();
+    });
+
+    // 添加到页面
+    document.body.appendChild(btn);
+
+    console.log('✅ [浮动按钮] 已添加固定下载按钮');
     return true;
   }
 
