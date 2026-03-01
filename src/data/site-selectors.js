@@ -87,5 +87,16 @@ export const SITE_SELECTORS = [
     content: ['div.C0NTENT', 'div#content', '#chaptercontent', '.content'],
     title: 'h1',
     bookInfo: 'h1'
+  },
+  {
+    name: 'pixiv.net',
+    hostname: 'pixiv.net',
+    toc: 'body',
+    tocPattern: 'pixiv',
+    chapters: 'main section',
+    content: ['main section', 'section', 'article'],
+    title: 'h1',
+    bookInfo: 'h1',
+    isSinglePage: true
   }
 ];

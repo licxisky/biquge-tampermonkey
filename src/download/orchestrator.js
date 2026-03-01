@@ -76,7 +76,12 @@ export const DownloadOrchestrator = {
     const clonedContentDiv = contentDiv.cloneNode(true);
     clonedContentDiv.querySelectorAll('div#device').forEach(ad => ad.remove());
     clonedContentDiv.querySelectorAll('p.readinline > a[href*="javascript:"]').forEach(op => op.remove());
-    clonedContentDiv.innerHTML = clonedContentDiv.innerHTML.replaceAll('<br>', '\n');
+
+    // 处理换行：先替换 <br> 标签，然后处理块级元素
+    clonedContentDiv.innerHTML = clonedContentDiv.innerHTML.replace(/<br\s*\/?>/gi, '\n');
+    clonedContentDiv.querySelectorAll('p, div').forEach(el => {
+      el.after(document.createTextNode('\n'));
+    });
 
     const rawContent = clonedContentDiv.innerText;
     const cleanedContent = cleanContent(rawContent);

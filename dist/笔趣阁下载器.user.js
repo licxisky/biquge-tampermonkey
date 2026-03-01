@@ -193,6 +193,17 @@
       content: ['div.C0NTENT', 'div#content', '#chaptercontent', '.content'],
       title: 'h1',
       bookInfo: 'h1'
+    },
+    {
+      name: 'pixiv.net',
+      hostname: 'pixiv.net',
+      toc: 'body',
+      tocPattern: 'pixiv',
+      chapters: 'main section',
+      content: ['main section', 'section', 'article'],
+      title: 'h1',
+      bookInfo: 'h1',
+      isSinglePage: true
     }
   ];
 
@@ -1711,7 +1722,12 @@
       const clonedContentDiv = contentDiv.cloneNode(true);
       clonedContentDiv.querySelectorAll('div#device').forEach(ad => ad.remove());
       clonedContentDiv.querySelectorAll('p.readinline > a[href*="javascript:"]').forEach(op => op.remove());
-      clonedContentDiv.innerHTML = clonedContentDiv.innerHTML.replaceAll('<br>', '\n');
+
+      // 处理换行：先替换 <br> 标签，然后处理块级元素
+      clonedContentDiv.innerHTML = clonedContentDiv.innerHTML.replace(/<br\s*\/?>/gi, '\n');
+      clonedContentDiv.querySelectorAll('p, div').forEach(el => {
+        el.after(document.createTextNode('\n'));
+      });
 
       const rawContent = clonedContentDiv.innerText;
       const cleanedContent = cleanContent(rawContent);
@@ -2942,6 +2958,14 @@ table input[type="number"] {
 
       // 检测站点结构
       state.currentSiteSelector = detectSiteStructure();
+
+      // 检测是否为单篇小说（如 pixiv 单篇）
+      if (state.currentSiteSelector.isSinglePage) {
+        showToast('检测到单篇小说，正在下载...', 'info');
+        DownloadOrchestrator.downloadCurrentChapter();
+        return;
+      }
+
       state.tocDiv = document.querySelector(state.currentSiteSelector.toc);
 
       if (!state.tocDiv) {
@@ -4102,5 +4126,5 @@ table input[type="number"] {
 
 })();
 
-// 生成时间: 2026/3/1 23:59:42
+// 生成时间: 2026/3/2 00:10:18
 //# sourceMappingURL=笔趣阁下载器.user.js.map

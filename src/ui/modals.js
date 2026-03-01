@@ -169,6 +169,14 @@ export const ModalManager = {
 
     // 检测站点结构
     state.currentSiteSelector = detectSiteStructure();
+
+    // 检测是否为单篇小说（如 pixiv 单篇）
+    if (state.currentSiteSelector.isSinglePage) {
+      showToast('检测到单篇小说，正在下载...', 'info');
+      DownloadOrchestrator.downloadCurrentChapter();
+      return;
+    }
+
     state.tocDiv = document.querySelector(state.currentSiteSelector.toc);
 
     if (!state.tocDiv) {
