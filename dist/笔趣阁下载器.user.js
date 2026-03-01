@@ -1076,13 +1076,20 @@
       }
 
       if (el.classList && el.classList.length > 0) {
-        for (const cls of el.classList) {
+        // 过滤掉 ElementPicker 自己添加的类
+        const ignoredClasses = ['bqg-picker-highlight', 'bqg-picker-marked'];
+        const validClasses = Array.from(el.classList).filter(cls => !ignoredClasses.includes(cls));
+
+        for (const cls of validClasses) {
           const sel = '.' + CSS.escape(cls);
           if (document.querySelectorAll(sel).length === 1) return '.' + cls;
         }
-        const combined = '.' + Array.from(el.classList).map(c => CSS.escape(c)).join('.');
-        if (document.querySelectorAll(combined).length === 1) {
-          return '.' + Array.from(el.classList).join('.');
+
+        if (validClasses.length > 0) {
+          const combined = '.' + validClasses.map(c => CSS.escape(c)).join('.');
+          if (document.querySelectorAll(combined).length === 1) {
+            return combined;
+          }
         }
       }
 
@@ -1093,7 +1100,13 @@
         if (parent.id) {
           parentSel = '#' + parent.id;
         } else if (parent.classList && parent.classList.length > 0) {
-          parentSel = parent.tagName.toLowerCase() + '.' + Array.from(parent.classList).join('.');
+          // 过滤掉 ElementPicker 自己添加的类
+          const ignoredClasses = ['bqg-picker-highlight', 'bqg-picker-marked'];
+          const validParentClasses = Array.from(parent.classList).filter(cls => !ignoredClasses.includes(cls));
+
+          if (validParentClasses.length > 0) {
+            parentSel = parent.tagName.toLowerCase() + '.' + validParentClasses.join('.');
+          }
         }
         if (parentSel) {
           const composed = `${parentSel} > ${tag}`;
@@ -1194,9 +1207,16 @@
       const types = this._modeTypes[this._mode] || [];
 
       const selector = this.generateSelector(el);
+
+      // 获取原始类名和过滤后的类名
+      const originalClasses = el.className ? el.className.split(' ').filter(c => c) : [];
+      const ignoredClasses = ['bqg-picker-highlight', 'bqg-picker-marked'];
+      const validClasses = originalClasses.filter(c => !ignoredClasses.includes(c));
+
       console.log('🖱️ [ElementPicker] 用户点击元素:', {
         tagName: el.tagName,
-        className: el.className,
+        originalClasses: originalClasses,
+        validClasses: validClasses,
         id: el.id,
         innerText: el.innerText?.substring(0, 50),
         textLength: el.innerText?.length,
@@ -4266,5 +4286,5 @@ table input[type="number"] {
 
 })();
 
-// 生成时间: 2026/3/2 01:26:32
+// 生成时间: 2026/3/2 01:36:35
 //# sourceMappingURL=笔趣阁下载器.user.js.map
