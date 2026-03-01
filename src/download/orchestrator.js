@@ -11,10 +11,40 @@ import { ContentDetector } from '../quality/content-detector.js';
 import { detectSiteStructure } from '../core/site-detector.js';
 import { cleanContent } from '../core/content-cleaner.js';
 import { gmFetch } from '../core/http-client.js';
+import { ElementPicker } from '../rules/element-picker.js';
 
 // Toast 辅助函数
 function showToast(msg, type = 'success', duration = 2500) {
   console.log(`[${type}] ${msg}`);
+}
+
+// 确认对话框辅助函数
+function confirm(message) {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:999999;';
+    modal.innerHTML = `
+      <div style="background:white;padding:24px;border-radius:12px;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+        <div style="font-size:16px;font-weight:600;margin-bottom:16px;color:#333;">未找到章节内容</div>
+        <div style="font-size:14px;color:#666;margin-bottom:24px;line-height:1.6;">${message}</div>
+        <div style="display:flex;gap:12px;justify-content:flex-end;">
+          <button id="confirmCancel" style="padding:8px 20px;border:1px solid #ddd;background:white;border-radius:6px;cursor:pointer;font-size:14px;">取消</button>
+          <button id="confirmOk" style="padding:8px 20px;border:none;background:#43a047;color:white;border-radius:6px;cursor:pointer;font-size:14px;">手动标记</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    modal.querySelector('#confirmOk').addEventListener('click', () => {
+      modal.remove();
+      resolve(true);
+    });
+
+    modal.querySelector('#confirmCancel').addEventListener('click', () => {
+      modal.remove();
+      resolve(false);
+    });
+  });
 }
 
 export const DownloadOrchestrator = {
@@ -22,6 +52,10 @@ export const DownloadOrchestrator = {
     console.log('📖 [单章下载] 开始提取当前章节内容...');
 
     const siteConfig = detectSiteStructure();
+
+    // 设置当前站点选择器，供 ElementPicker 使用
+    ElementPicker.setCurrentSiteSelector(siteConfig);
+
     let contentDiv = null;
 
     if (customContentSelector) {
@@ -88,7 +122,27 @@ export const DownloadOrchestrator = {
 
     if (!contentDiv) {
       console.error('❌ [单章下载] 未找到内容元素');
-      showToast('❌ 未找到章节内容元素', 'error');
+
+      // 提示用户使用手动标记
+      const useManual = await confirm(
+        '脚本无法自动识别章节内容区域。<br><br>' +
+        '您可以使用<strong>手动标记</strong>功能，点击页面上的章节内容区域来告诉脚本位置。<br><br>' +
+        '是否启动手动标记？'
+      );
+
+      if (useManual) {
+        // 启动 ElementPicker 的 content 模式
+        await new Promise((resolve) => {
+          ElementPicker.start('content', (rule) => {
+            // 标记完成后，使用新的选择器重新执行下载
+            console.log('✅ 手动标记完成，使用新选择器下载:', rule.content[0]);
+            this.downloadCurrentChapter(rule.content[0]);
+            resolve();
+          });
+        });
+      } else {
+        showToast('❌ 未找到章节内容元素', 'error');
+      }
       return;
     }
 
