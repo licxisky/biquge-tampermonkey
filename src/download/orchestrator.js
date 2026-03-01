@@ -50,8 +50,12 @@ function confirm(message) {
 export const DownloadOrchestrator = {
   async downloadCurrentChapter(customContentSelector = null) {
     console.log('📖 [单章下载] 开始提取当前章节内容...');
+    if (customContentSelector) {
+      console.log('🔍 [单章下载] 使用自定义选择器:', customContentSelector);
+    }
 
     const siteConfig = detectSiteStructure();
+    console.log('🔧 [单章下载] 站点配置:', siteConfig);
 
     // 设置当前站点选择器，供 ElementPicker 使用
     ElementPicker.setCurrentSiteSelector(siteConfig);
@@ -60,27 +64,45 @@ export const DownloadOrchestrator = {
 
     if (customContentSelector) {
       contentDiv = document.querySelector(customContentSelector);
-      if (contentDiv) console.log(`✅ 使用自定义选择器找到内容: ${customContentSelector}`);
+      if (contentDiv) {
+        console.log(`✅ [单章下载] 使用自定义选择器找到内容: ${customContentSelector}`);
+        console.log(`📊 [单章下载] 内容长度: ${contentDiv.innerText.trim().length}`);
+      } else {
+        console.log(`❌ [单章下载] 自定义选择器未找到元素: ${customContentSelector}`);
+      }
     }
 
     if (!contentDiv) {
+      console.log('🔍 [单章下载] 尝试站点配置选择器:', siteConfig.content);
       for (const selector of siteConfig.content) {
-        contentDiv = document.querySelector(selector);
-        if (contentDiv && contentDiv.innerText.trim().length > 50) {
-          console.log(`✅ 找到内容容器: ${selector}`);
-          break;
+        const el = document.querySelector(selector);
+        if (el) {
+          console.log(`  - 尝试 "${selector}": 找到元素，文本长度=${el.innerText.trim().length}`);
+          if (el.innerText.trim().length > 50) {
+            contentDiv = el;
+            console.log(`✅ 找到内容容器: ${selector}`);
+            break;
+          }
+        } else {
+          console.log(`  - 尝试 "${selector}": 未找到元素`);
         }
       }
     }
 
     if (!contentDiv) {
+      console.log('🔍 [单章下载] 尝试通用选择器...');
       const commonSelectors = ['div#content', '#chaptercontent', '.content', '#BookText', '.chapter-content', 'article', '.text-content', '.book-content'];
       for (const selector of commonSelectors) {
         const el = document.querySelector(selector);
-        if (el && el.innerText.trim().length > 100) {
-          contentDiv = el;
-          console.log(`✅ 使用通用选择器找到内容: ${selector}`);
-          break;
+        if (el) {
+          console.log(`  - 尝试 "${selector}": 找到元素，文本长度=${el.innerText.trim().length}`);
+          if (el.innerText.trim().length > 100) {
+            contentDiv = el;
+            console.log(`✅ 使用通用选择器找到内容: ${selector}`);
+            break;
+          }
+        } else {
+          console.log(`  - 尝试 "${selector}": 未找到元素`);
         }
       }
     }
@@ -131,16 +153,19 @@ export const DownloadOrchestrator = {
       );
 
       if (useManual) {
+        console.log('🎯 [单章下载] 启动手动标记模式...');
         // 启动 ElementPicker 的 content 模式
         await new Promise((resolve) => {
           ElementPicker.start('content', (rule) => {
             // 标记完成后，使用新的选择器重新执行下载
-            console.log('✅ 手动标记完成，使用新选择器下载:', rule.content[0]);
+            console.log('✅ [单章下载] 手动标记完成，规则信息:', rule);
+            console.log('✅ [单章下载] 使用新选择器重新下载:', rule.content[0]);
             this.downloadCurrentChapter(rule.content[0]);
             resolve();
           });
         });
       } else {
+        console.log('❌ [单章下载] 用户取消手动标记');
         showToast('❌ 未找到章节内容元素', 'error');
       }
       return;

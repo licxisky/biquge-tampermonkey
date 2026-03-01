@@ -1042,6 +1042,7 @@
     },
 
     start(mode, onComplete) {
+      console.log('🎯 [ElementPicker] 启动手动标记模式:', mode);
       this._mode = mode;
       this._picked = {};
       this._onComplete = onComplete || null;
@@ -1192,10 +1193,20 @@
       if (this._menu) { this._menu.remove(); this._menu = null; }
       const types = this._modeTypes[this._mode] || [];
 
+      const selector = this.generateSelector(el);
+      console.log('🖱️ [ElementPicker] 用户点击元素:', {
+        tagName: el.tagName,
+        className: el.className,
+        id: el.id,
+        innerText: el.innerText?.substring(0, 50),
+        textLength: el.innerText?.length,
+        generatedSelector: selector
+      });
+
       const menu = document.createElement('div');
       menu.id = 'bqg-picker-menu';
       menu.innerHTML = `
-      <div style="font-size:11px;color:#999;margin-bottom:8px;">${this.generateSelector(el)}</div>
+      <div style="font-size:11px;color:#999;margin-bottom:8px;">${selector}</div>
       <div style="font-size:12px;color:#666;margin-bottom:10px;">请选择此元素的类型：</div>
       ${types.map(t => `<div class="bqg-picker-menu-item" data-key="${t.key}">${t.label}</div>`).join('')}
       <div class="bqg-picker-menu-item bqg-picker-menu-cancel">✗ 不标记</div>`;
@@ -1210,6 +1221,7 @@
         if (!item) return;
         e.stopPropagation();
         if (item.classList.contains('bqg-picker-menu-cancel')) {
+          console.log('❌ [ElementPicker] 用户取消标记');
           menu.remove(); this._menu = null;
           return;
         }
@@ -1217,6 +1229,13 @@
         const key = item.dataset.key;
         const sel = this.generateSelector(el);
         this._picked[key] = sel;
+
+        console.log('✅ [ElementPicker] 标记元素:', {
+          key,
+          label: types.find(t => t.key === key)?.label,
+          selector: sel,
+          allPicked: this._picked
+        });
 
         if (key === 'toc') {
           const tocEl = document.querySelector(sel);
@@ -1228,6 +1247,7 @@
                               parentTag === 'li' ? 'ul > li > a[href]' :
                               `${sel} a[href]`;
               this._picked['chapters'] = chapSel;
+              console.log('📋 [ElementPicker] 自动生成章节选择器:', chapSel);
             }
           }
         }
@@ -1240,9 +1260,12 @@
     },
 
     finish() {
+      console.log('🏁 [ElementPicker] 用户点击完成，检查标记...');
+
       const types = this._modeTypes[this._mode] || [];
       const missing = types.filter(t => t.required && !this._picked[t.key]).map(t => t.label);
       if (missing.length > 0) {
+        console.log('⚠️ [ElementPicker] 缺少必选项:', missing);
         showToast$2(`⚠️ 请先标记必选项：${missing.join('、')}`, 'warn', 3500);
         return;
       }
@@ -1274,12 +1297,16 @@
         };
       }
 
+      console.log('📋 [ElementPicker] 生成的规则:', rule);
+
       if (SiteRuleManager.addRule(rule)) {
         currentSiteSelector$1 = { ...rule, custom: true };
         this.stop();
         showToast$2(`✅ 规则已保存并立即生效！`, 'success', 3500);
+        console.log('✅ [ElementPicker] 规则已保存，调用回调函数');
         if (this._onComplete) this._onComplete(rule);
       } else {
+        console.error('❌ [ElementPicker] 保存规则失败');
         showToast$2('保存规则失败，请查看控制台（F12）', 'error');
       }
     }
@@ -1695,8 +1722,12 @@
   const DownloadOrchestrator = {
     async downloadCurrentChapter(customContentSelector = null) {
       console.log('📖 [单章下载] 开始提取当前章节内容...');
+      if (customContentSelector) {
+        console.log('🔍 [单章下载] 使用自定义选择器:', customContentSelector);
+      }
 
       const siteConfig = detectSiteStructure();
+      console.log('🔧 [单章下载] 站点配置:', siteConfig);
 
       // 设置当前站点选择器，供 ElementPicker 使用
       ElementPicker.setCurrentSiteSelector(siteConfig);
@@ -1705,27 +1736,45 @@
 
       if (customContentSelector) {
         contentDiv = document.querySelector(customContentSelector);
-        if (contentDiv) console.log(`✅ 使用自定义选择器找到内容: ${customContentSelector}`);
+        if (contentDiv) {
+          console.log(`✅ [单章下载] 使用自定义选择器找到内容: ${customContentSelector}`);
+          console.log(`📊 [单章下载] 内容长度: ${contentDiv.innerText.trim().length}`);
+        } else {
+          console.log(`❌ [单章下载] 自定义选择器未找到元素: ${customContentSelector}`);
+        }
       }
 
       if (!contentDiv) {
+        console.log('🔍 [单章下载] 尝试站点配置选择器:', siteConfig.content);
         for (const selector of siteConfig.content) {
-          contentDiv = document.querySelector(selector);
-          if (contentDiv && contentDiv.innerText.trim().length > 50) {
-            console.log(`✅ 找到内容容器: ${selector}`);
-            break;
+          const el = document.querySelector(selector);
+          if (el) {
+            console.log(`  - 尝试 "${selector}": 找到元素，文本长度=${el.innerText.trim().length}`);
+            if (el.innerText.trim().length > 50) {
+              contentDiv = el;
+              console.log(`✅ 找到内容容器: ${selector}`);
+              break;
+            }
+          } else {
+            console.log(`  - 尝试 "${selector}": 未找到元素`);
           }
         }
       }
 
       if (!contentDiv) {
+        console.log('🔍 [单章下载] 尝试通用选择器...');
         const commonSelectors = ['div#content', '#chaptercontent', '.content', '#BookText', '.chapter-content', 'article', '.text-content', '.book-content'];
         for (const selector of commonSelectors) {
           const el = document.querySelector(selector);
-          if (el && el.innerText.trim().length > 100) {
-            contentDiv = el;
-            console.log(`✅ 使用通用选择器找到内容: ${selector}`);
-            break;
+          if (el) {
+            console.log(`  - 尝试 "${selector}": 找到元素，文本长度=${el.innerText.trim().length}`);
+            if (el.innerText.trim().length > 100) {
+              contentDiv = el;
+              console.log(`✅ 使用通用选择器找到内容: ${selector}`);
+              break;
+            }
+          } else {
+            console.log(`  - 尝试 "${selector}": 未找到元素`);
           }
         }
       }
@@ -1776,16 +1825,19 @@
         );
 
         if (useManual) {
+          console.log('🎯 [单章下载] 启动手动标记模式...');
           // 启动 ElementPicker 的 content 模式
           await new Promise((resolve) => {
             ElementPicker.start('content', (rule) => {
               // 标记完成后，使用新的选择器重新执行下载
-              console.log('✅ 手动标记完成，使用新选择器下载:', rule.content[0]);
+              console.log('✅ [单章下载] 手动标记完成，规则信息:', rule);
+              console.log('✅ [单章下载] 使用新选择器重新下载:', rule.content[0]);
               this.downloadCurrentChapter(rule.content[0]);
               resolve();
             });
           });
         } else {
+          console.log('❌ [单章下载] 用户取消手动标记');
           showToast$1('❌ 未找到章节内容元素', 'error');
         }
         return;
@@ -4214,5 +4266,5 @@ table input[type="number"] {
 
 })();
 
-// 生成时间: 2026/3/2 00:16:49
+// 生成时间: 2026/3/2 01:26:32
 //# sourceMappingURL=笔趣阁下载器.user.js.map

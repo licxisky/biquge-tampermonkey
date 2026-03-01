@@ -40,6 +40,7 @@ export const ElementPicker = {
   },
 
   start(mode, onComplete) {
+    console.log('🎯 [ElementPicker] 启动手动标记模式:', mode);
     this._mode = mode;
     this._picked = {};
     this._onComplete = onComplete || null;
@@ -190,10 +191,20 @@ export const ElementPicker = {
     if (this._menu) { this._menu.remove(); this._menu = null; }
     const types = this._modeTypes[this._mode] || [];
 
+    const selector = this.generateSelector(el);
+    console.log('🖱️ [ElementPicker] 用户点击元素:', {
+      tagName: el.tagName,
+      className: el.className,
+      id: el.id,
+      innerText: el.innerText?.substring(0, 50),
+      textLength: el.innerText?.length,
+      generatedSelector: selector
+    });
+
     const menu = document.createElement('div');
     menu.id = 'bqg-picker-menu';
     menu.innerHTML = `
-      <div style="font-size:11px;color:#999;margin-bottom:8px;">${this.generateSelector(el)}</div>
+      <div style="font-size:11px;color:#999;margin-bottom:8px;">${selector}</div>
       <div style="font-size:12px;color:#666;margin-bottom:10px;">请选择此元素的类型：</div>
       ${types.map(t => `<div class="bqg-picker-menu-item" data-key="${t.key}">${t.label}</div>`).join('')}
       <div class="bqg-picker-menu-item bqg-picker-menu-cancel">✗ 不标记</div>`;
@@ -208,6 +219,7 @@ export const ElementPicker = {
       if (!item) return;
       e.stopPropagation();
       if (item.classList.contains('bqg-picker-menu-cancel')) {
+        console.log('❌ [ElementPicker] 用户取消标记');
         menu.remove(); this._menu = null;
         return;
       }
@@ -215,6 +227,13 @@ export const ElementPicker = {
       const key = item.dataset.key;
       const sel = this.generateSelector(el);
       this._picked[key] = sel;
+
+      console.log('✅ [ElementPicker] 标记元素:', {
+        key,
+        label: types.find(t => t.key === key)?.label,
+        selector: sel,
+        allPicked: this._picked
+      });
 
       if (key === 'toc') {
         const tocEl = document.querySelector(sel);
@@ -226,6 +245,7 @@ export const ElementPicker = {
                             parentTag === 'li' ? 'ul > li > a[href]' :
                             `${sel} a[href]`;
             this._picked['chapters'] = chapSel;
+            console.log('📋 [ElementPicker] 自动生成章节选择器:', chapSel);
           }
         }
       }
@@ -238,9 +258,12 @@ export const ElementPicker = {
   },
 
   finish() {
+    console.log('🏁 [ElementPicker] 用户点击完成，检查标记...');
+
     const types = this._modeTypes[this._mode] || [];
     const missing = types.filter(t => t.required && !this._picked[t.key]).map(t => t.label);
     if (missing.length > 0) {
+      console.log('⚠️ [ElementPicker] 缺少必选项:', missing);
       showToast(`⚠️ 请先标记必选项：${missing.join('、')}`, 'warn', 3500);
       return;
     }
@@ -272,12 +295,16 @@ export const ElementPicker = {
       };
     }
 
+    console.log('📋 [ElementPicker] 生成的规则:', rule);
+
     if (SiteRuleManager.addRule(rule)) {
       currentSiteSelector = { ...rule, custom: true };
       this.stop();
       showToast(`✅ 规则已保存并立即生效！`, 'success', 3500);
+      console.log('✅ [ElementPicker] 规则已保存，调用回调函数');
       if (this._onComplete) this._onComplete(rule);
     } else {
+      console.error('❌ [ElementPicker] 保存规则失败');
       showToast('保存规则失败，请查看控制台（F12）', 'error');
     }
   }
