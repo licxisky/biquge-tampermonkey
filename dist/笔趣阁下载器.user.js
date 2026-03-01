@@ -1319,12 +1319,36 @@
             if (contentDiv && contentDiv.innerText.trim().length > CONFIG.minContentLength) {
               cleanup();
 
-              contentDiv.querySelectorAll('div#device').forEach(ad => ad.remove());
-              contentDiv.querySelectorAll('p.readinline > a[href*="javascript:"]').forEach(op => op.remove());
-              contentDiv.innerHTML = contentDiv.innerHTML.replaceAll('<br>', '\n');
+              // 克隆节点以避免修改原始 DOM
+              const clonedDiv = contentDiv.cloneNode(true);
 
-              const title = iframeDoc.querySelector('h1')?.innerText || '';
-              const content = cleanContent(contentDiv.innerText);
+              // 移除广告和操作链接
+              clonedDiv.querySelectorAll('div#device').forEach(ad => ad.remove());
+              clonedDiv.querySelectorAll('p.readinline > a[href*="javascript:"]').forEach(op => op.remove());
+
+              // 特殊处理：章节标题在第一个 p 标签中
+              const firstP = clonedDiv.querySelector('p:first-child');
+              let title = '';
+              if (firstP) {
+                const firstPText = firstP.innerText.trim();
+                // 检查是否像章节标题
+                if (firstPText && (firstPText.includes('【') || firstPText.includes('《') || firstPText.includes('第')) && firstPText.length < 100) {
+                  title = firstPText;
+                  // 移除标题段落，避免重复
+                  firstP.remove();
+                }
+              }
+
+              // 处理换行：先替换 <br> 标签
+              clonedDiv.innerHTML = clonedDiv.innerHTML.replace(/<br\s*\/?>/gi, '\n');
+
+              // 在每个块级元素（p, div）后添加换行符，处理使用段落换行的情况
+              clonedDiv.querySelectorAll('p, div').forEach(el => {
+                el.after(document.createTextNode('\n'));
+              });
+
+              if (!title) title = iframeDoc.querySelector('h1')?.innerText || '';
+              const content = cleanContent(clonedDiv.innerText);
 
               resolve({ title, content });
             }
@@ -1404,10 +1428,38 @@
       }
 
       if (contentDiv) {
-        contentDiv.querySelectorAll('div#device').forEach(ad => ad.remove());
-        contentDiv.querySelectorAll('p.readinline > a[href*="javascript:"]').forEach(op => op.remove());
-        contentDiv.innerHTML = contentDiv.innerHTML.replaceAll('<br>', '\n');
-        const extractedContent = contentDiv.innerText.trim();
+        // 克隆节点以避免修改原始 DOM
+        const clonedDiv = contentDiv.cloneNode(true);
+
+        // 移除广告和操作链接
+        clonedDiv.querySelectorAll('div#device').forEach(ad => ad.remove());
+        clonedDiv.querySelectorAll('p.readinline > a[href*="javascript:"]').forEach(op => op.remove());
+
+        // 特殊处理：alicesw.com 等站点的章节标题在第一个 p 标签中
+        const firstP = clonedDiv.querySelector('p:first-child');
+        if (firstP) {
+          const firstPText = firstP.innerText.trim();
+          // 检查是否像章节标题（包含【】或《》等特殊字符，且长度适中）
+          if (firstPText && (firstPText.includes('【') || firstPText.includes('《') || firstPText.includes('第')) && firstPText.length < 100) {
+            // 如果还没有标题，使用第一个段落作为标题
+            if (!title) {
+              title = firstPText;
+            }
+            // 移除标题段落，避免重复
+            firstP.remove();
+          }
+        }
+
+        // 处理换行：先替换 <br> 标签
+        clonedDiv.innerHTML = clonedDiv.innerHTML.replace(/<br\s*\/?>/gi, '\n');
+
+        // 在每个块级元素（p, div）后添加换行符，处理使用段落换行的情况
+        clonedDiv.querySelectorAll('p, div').forEach(el => {
+          el.after(document.createTextNode('\n'));
+        });
+
+        // 获取文本内容
+        const extractedContent = clonedDiv.innerText.trim();
         const cleanedContent = cleanContent(extractedContent);
 
         if (cleanedContent.length < CONFIG.minContentLength) {
@@ -1813,7 +1865,7 @@
     }
   };
 
-  // ===== CSS: theme.css =====
+  // ===== CSS: C:\Users\licxisky\Desktop\biquge-tampermonkey\src\ui\theme.css =====
   GM_addStyle(`/* UI 主题样式模块 */
 /* 功能：集中管理所有 CSS 样式 */
 
@@ -4050,5 +4102,5 @@ table input[type="number"] {
 
 })();
 
-// 生成时间: 2026/2/28 20:04:04
+// 生成时间: 2026/3/1 23:59:42
 //# sourceMappingURL=笔趣阁下载器.user.js.map
