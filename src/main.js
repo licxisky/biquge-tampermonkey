@@ -72,6 +72,8 @@ import { SITE_SELECTORS } from './data/site-selectors.js';
 
     // 添加下载按钮
     addDownloadButton();
+    // 添加章节页下载按钮
+    addChapterDownloadButton();
   }
 
   // 添加下载按钮到目录页
@@ -149,6 +151,78 @@ import { SITE_SELECTORS } from './data/site-selectors.js';
       targetH1.appendChild(btn);
     }
 
+    return true;
+  }
+
+  // 添加下载单章按钮到内容页
+  function addChapterDownloadButton() {
+    // 检测是否为章节页（有内容区域的页面）
+    const currentSite = detectSiteStructure();
+    if (!currentSite) return false;
+
+    // 获取内容选择器
+    const contentSelectors = currentSite.content || [];
+    if (!contentSelectors.length) return false;
+
+    // 检查是否存在内容元素
+    let contentElement = null;
+    for (const selector of contentSelectors) {
+      contentElement = document.querySelector(selector);
+      if (contentElement) break;
+    }
+
+    // 如果没有找到内容元素，说明不是章节页
+    if (!contentElement) return false;
+
+    // 检查是否已经在目录页（目录页不应该显示单章下载按钮）
+    if (document.querySelector('button#downloadMenuBtn')) return false;
+
+    // 防止重复添加按钮
+    if (document.querySelector('button#downloadChapterBtn')) return false;
+
+    // 查找合适的标题元素来放置按钮
+    const h1Candidates = Array.from(document.querySelectorAll("h1, h2"));
+    let targetHeading = h1Candidates.find(h => {
+      const className = h.className || '';
+      const parentId = h.parentElement?.id || '';
+      const parentClass = h.parentElement?.className || '';
+      const excludePatterns = [
+        /logo/i, /header/i, /nav/i, /footer/i,
+        /banner/i, /topbar/i, /navbar/i, /comment/i
+      ];
+      return !excludePatterns.some(p => p.test(className) || p.test(parentId) || p.test(parentClass));
+    });
+
+    if (!targetHeading) return false;
+
+    const btn = document.createElement("button");
+    btn.innerText = "📖 下载本章";
+    btn.id = "downloadChapterBtn";
+    btn.style.cssText = "padding:4px 12px; margin:0 0 0 10px; font-size:14px; font-weight:500; background:linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color:white; border:none; border-radius:6px; cursor:pointer; vertical-align:middle;";
+    btn.addEventListener('click', () => {
+      DownloadOrchestrator.downloadCurrentChapter();
+    });
+
+    // 尝试在标题的文本内容之后插入按钮
+    let textNode = null;
+    for (let i = 0; i < targetHeading.childNodes.length; i++) {
+      if (targetHeading.childNodes[i].nodeType === Node.TEXT_NODE && targetHeading.childNodes[i].textContent.trim()) {
+        textNode = targetHeading.childNodes[i];
+        break;
+      }
+    }
+
+    if (textNode) {
+      if (textNode.nextSibling) {
+        targetHeading.insertBefore(btn, textNode.nextSibling);
+      } else {
+        targetHeading.appendChild(btn);
+      }
+    } else {
+      targetHeading.appendChild(btn);
+    }
+
+    console.log('✅ [章节页] 已添加下载单章按钮');
     return true;
   }
 
